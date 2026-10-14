@@ -1,0 +1,11 @@
+pluginManagement {
+    repositories {
+        maven { url = 'https://maven.fabricmc.net/' }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+// mms-worldgen is a standalone leaf. It depends on no sibling mod, so there is no
+// composite build to wire in here.
+rootProject.name = 'mms-worldgen'

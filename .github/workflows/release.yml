@@ -1,0 +1,33 @@
+# Release — thin caller. All logic lives in the reusable engine at
+# mudbourn/mms-pack/.github/workflows/mod-release.yml, which derives libs,
+# sibling composite builds, and version stamping from this repo's own tree.
+# Keep this file identical to mms-pack's .github/workflows/_caller-template.yml;
+# `mms-repos.py check-callers` enforces that.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.1.0) — authoritative; gradle.properties is bumped to match"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build and validate only — do not commit, tag, or publish"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  release:
+    uses: mudbourn/mms-pack/.github/workflows/mod-release.yml@main
+    secrets: inherit
+    with:
+      version: ${{ inputs.version }}
+      prerelease: ${{ inputs.prerelease }}
+      dry_run: ${{ inputs.dry_run }}

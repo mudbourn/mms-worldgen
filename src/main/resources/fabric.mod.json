@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "mms_worldgen",
+  "version": "${version}",
+  "name": "MMS Worldgen",
+  "description": "Per-dimension structure budget: managed structure sets share one deterministic slot per cell, so each mod gets a fair, tunable share of the world.",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "info.mudbourn.mmsworldgen.MmsWorldgen"
+    ]
+  },
+  "mixins": [
+    "mms_worldgen.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "required": true,
+  "package": "info.mudbourn.mmsworldgen.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
