@@ -2,7 +2,13 @@
   "required": true,
   "package": "info.mudbourn.mmsworldgen.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": [],
+  "mixins": [
+    "ChunkGeneratorStructureStateAccessor",
+    "ServerLevelMixin",
+    "StructurePlacementAccessor",
+    "StructureSetAccessor",
+    "StructureSetMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }
