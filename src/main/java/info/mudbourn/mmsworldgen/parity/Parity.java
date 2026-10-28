@@ -17,6 +17,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.storage.LevelResource;
 
 public final class Parity {
     private record Key(String dimension, ParityStage stage, int x, int z) {
@@ -45,7 +46,7 @@ public final class Parity {
 
     // Registers server start and stop handling.
     public static void init() {
-        ServerLifecycleEvents.SERVER_STARTING.register(server -> start());
+        ServerLifecycleEvents.SERVER_STARTING.register(Parity::start);
         ServerLifecycleEvents.SERVER_STARTED.register(Parity::featureOrder);
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> stop());
     }
@@ -54,7 +55,7 @@ public final class Parity {
         return MmsWorldgen.config.parity.mode;
     }
 
-    private static synchronized void start() {
+    private static synchronized void start(MinecraftServer server) {
         String mode = mode();
         dir = FabricLoader.getInstance()
             .getGameDir()
@@ -66,7 +67,10 @@ public final class Parity {
         UNRECORDED.set(0);
         RECORDED.set(0);
         LOADED.clear();
-        if ("record".equals(mode) && hasFiles(dir)) {
+        Path region = server.getWorldPath(LevelResource.ROOT).resolve("region");
+        if (!"off".equals(mode) && hasFiles(region)) {
+            MmsWorldgen.LOG.warn("Parity {} skipped, {} already has chunks; use a new world", mode, region);
+        } else if ("record".equals(mode) && hasFiles(dir)) {
             MmsWorldgen.LOG.error("Parity record refused, {} already has files; change the label or clear it", dir);
         } else if ("record".equals(mode)) {
             writer = new ParityWriter(dir);
@@ -172,14 +176,17 @@ public final class Parity {
     }
 
     private static void observe(String dimension, ParityStage stage, ChunkAccess chunk) {
-        if (!active) {
-            return;
-        }
-        int x = chunk.getPos().x;
-        int z = chunk.getPos().z;
         long[] hashes = stage == ParityStage.NOISE_HEIGHTMAPS
             ? ParityHash.heightmaps(chunk)
             : ParityHash.sections(chunk);
+        observe(dimension, stage, chunk.getPos().x, chunk.getPos().z, hashes);
+    }
+
+    // Records or checks one row of hashes for a chunk stage.
+    static void observe(String dimension, ParityStage stage, int x, int z, long[] hashes) {
+        if (!active) {
+            return;
+        }
         if (recording) {
             ParityWriter current = writer;
             if (current != null) {
@@ -197,6 +204,10 @@ public final class Parity {
         for (int i = 0; i < Math.max(expected.length, hashes.length); i++) {
             if (i >= expected.length || i >= hashes.length || expected[i] != hashes[i]) {
                 same = false;
+                if (stage == ParityStage.FEATURE_TRACE) {
+                    ParityTrace.logDivergence(dimension, x, z, expected, hashes, i);
+                    break;
+                }
                 MmsWorldgen.LOG.warn(
                     "Parity mismatch dimension={} chunk=({}, {}) stage={} index={}",
                     dimension,

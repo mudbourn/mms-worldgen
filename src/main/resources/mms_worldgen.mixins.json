@@ -4,6 +4,7 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "ParityChunkGeneratorAccessor",
+    "ParityChunkGeneratorMixin",
     "ParityChunkStatusTasksMixin",
     "SchedDistanceManagerAccessor",
     "SchedPlayerTicketTrackerAccessor",

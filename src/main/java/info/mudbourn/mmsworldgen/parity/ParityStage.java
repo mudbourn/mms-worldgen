@@ -5,7 +5,8 @@ public enum ParityStage {
     NOISE_HEIGHTMAPS("noise_heightmaps"),
     SURFACE("surface"),
     CARVERS("carvers"),
-    FEATURES("features");
+    FEATURES("features"),
+    FEATURE_TRACE("feature_trace");
 
     public final String id;
 
