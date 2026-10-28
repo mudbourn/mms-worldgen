@@ -1,7 +1,8 @@
 use crate::beard::Beardifier;
 use crate::mth;
-use crate::tree::{Hooks, MarkerKind, Tree};
+use crate::tree::{Hooks, MarkerKind, Memo, Node, Tree};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 pub const ROOT_BARRIER: usize = 0;
 pub const ROOT_FLOODEDNESS: usize = 1;
@@ -72,6 +73,25 @@ impl Layout {
     }
 }
 
+// Stage versions that tell an interpolator which of its lerp results are out of date.
+#[derive(Default)]
+struct Fractions {
+    y: f64,
+    x: f64,
+    z: f64,
+    versions: [u64; 3],
+    tick: u64,
+}
+
+impl Fractions {
+    fn bump(&mut self, from: usize) {
+        self.tick += 1;
+        for version in &mut self.versions[from..] {
+            *version = self.tick;
+        }
+    }
+}
+
 // One NoiseInterpolator: two corner slices and the staged interpolation state.
 struct Interpolator {
     input: usize,
@@ -81,10 +101,12 @@ struct Interpolator {
     value_xz: [f64; 4],
     value_z: [f64; 2],
     value: f64,
+    seen: [u64; 3],
+    cell_ready: bool,
 }
 
 impl Interpolator {
-    fn new(input: usize, layout: &Layout) -> Interpolator {
+    fn new(input: usize, layout: &Layout, cell_ready: bool) -> Interpolator {
         Interpolator {
             input,
             slice0: vec![0.0; layout.slice_len()],
@@ -93,6 +115,8 @@ impl Interpolator {
             value_xz: [0.0; 4],
             value_z: [0.0; 2],
             value: 0.0,
+            seen: [0; 3],
+            cell_ready,
         }
     }
 
@@ -110,30 +134,79 @@ impl Interpolator {
         ];
     }
 
-    fn update_for_y(&mut self, d: f64) {
-        let n = &self.noise;
-        self.value_xz = [
-            mth::lerp(d, n[0], n[4]),
-            mth::lerp(d, n[2], n[6]),
-            mth::lerp(d, n[1], n[5]),
-            mth::lerp(d, n[3], n[7]),
-        ];
-    }
-
-    fn update_for_x(&mut self, d: f64) {
-        self.value_z = [
-            mth::lerp(d, self.value_xz[0], self.value_xz[1]),
-            mth::lerp(d, self.value_xz[2], self.value_xz[3]),
-        ];
-    }
-
-    fn update_for_z(&mut self, d: f64) {
-        self.value = mth::lerp(d, self.value_z[0], self.value_z[1]);
+    // The staged value at the current fractions, recomputing only the stale stages.
+    fn staged(&mut self, f: &Fractions) -> f64 {
+        if self.seen[0] != f.versions[0] {
+            let n = &self.noise;
+            self.value_xz = [
+                mth::lerp(f.y, n[0], n[4]),
+                mth::lerp(f.y, n[2], n[6]),
+                mth::lerp(f.y, n[1], n[5]),
+                mth::lerp(f.y, n[3], n[7]),
+            ];
+            self.seen[0] = f.versions[0];
+        }
+        if self.seen[1] != f.versions[1] {
+            self.value_z = [
+                mth::lerp(f.x, self.value_xz[0], self.value_xz[1]),
+                mth::lerp(f.x, self.value_xz[2], self.value_xz[3]),
+            ];
+            self.seen[1] = f.versions[1];
+        }
+        if self.seen[2] != f.versions[2] {
+            self.value = mth::lerp(f.z, self.value_z[0], self.value_z[1]);
+            self.seen[2] = f.versions[2];
+        }
+        self.value
     }
 
     fn cell_value(&self, x: f64, y: f64, z: f64) -> f64 {
         let n = &self.noise;
         mth::lerp3(x, y, z, n[0], n[2], n[4], n[6], n[1], n[3], n[5], n[7])
+    }
+
+    // Fills the lerp3 value of every block of the selected cell in cell cache order.
+    fn fill_cell(&self, layout: &Layout, fx: &[f64], fy: &[f64], fz: &[f64], out: &mut [f64]) {
+        match layout.cell_width {
+            4 => self.fill_cell_width::<4>(fx, fy, fz, out),
+            8 => self.fill_cell_width::<8>(fx, fy, fz, out),
+            _ => self.fill_cell_width::<0>(fx, fy, fz, out),
+        }
+    }
+
+    // Cell fill with the width known at compile time, or runtime when W is 0.
+    fn fill_cell_width<const W: usize>(&self, fx: &[f64], fy: &[f64], fz: &[f64], out: &mut [f64]) {
+        let n = self.noise;
+        let width = if W == 0 { fz.len() } else { W };
+        let height = fy.len();
+        for (cx, x) in fx.iter().enumerate() {
+            let a = mth::lerp(*x, n[0], n[2]);
+            let b = mth::lerp(*x, n[4], n[6]);
+            let c = mth::lerp(*x, n[1], n[3]);
+            let d = mth::lerp(*x, n[5], n[7]);
+            for (cy, y) in fy.iter().enumerate() {
+                let near = mth::lerp(*y, a, b);
+                let far = mth::lerp(*y, c, d);
+                let row = ((height - 1 - cy) * width + cx) * width;
+                for cz in 0..width {
+                    out[row + cz] = mth::lerp(fz[cz], near, far);
+                }
+            }
+        }
+    }
+
+    // The smallest and largest corner of the selected cell, or NaN when a corner is NaN.
+    fn corner_range(&self) -> (f64, f64) {
+        let mut low = f64::INFINITY;
+        let mut high = f64::NEG_INFINITY;
+        for v in self.noise {
+            if v.is_nan() {
+                return (f64::NAN, f64::NAN);
+            }
+            low = low.min(v);
+            high = high.max(v);
+        }
+        (low, high)
     }
 
     fn swap_slices(&mut self) {
@@ -145,6 +218,38 @@ impl Interpolator {
 struct CellCache {
     input: Option<usize>,
     values: Vec<f64>,
+}
+
+// Multiplicative hasher for the two int column keys.
+#[derive(Default)]
+struct ColumnHasher(u64);
+
+impl Hasher for ColumnHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(5) ^ *byte as u64).wrapping_mul(0x517cc1b727220a95);
+        }
+    }
+
+    fn write_i32(&mut self, value: i32) {
+        self.0 = (self.0.rotate_left(5) ^ value as u32 as u64).wrapping_mul(0x517cc1b727220a95);
+    }
+}
+
+fn fractions(count: i32) -> Vec<f64> {
+    (0..count).map(|i| i as f64 / count as f64).collect()
+}
+
+// What the density bounds prove about a selected cell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CellState {
+    Empty,
+    Solid,
+    Mixed,
 }
 
 // Evaluation state of one chunk that stands in for vanilla's NoiseChunk.
@@ -160,7 +265,19 @@ pub struct Eval<'a> {
     cell_of: Vec<usize>,
     interpolators: Vec<Interpolator>,
     cell_caches: Vec<CellCache>,
-    surface_cache: HashMap<(i32, i32), i32>,
+    root_interp: Vec<usize>,
+    corner_ranges: Vec<(f64, f64)>,
+    bounds: Vec<(f64, f64)>,
+    cells: Vec<Vec<f64>>,
+    plan_regs: Vec<f64>,
+    lane_offsets: Vec<[i32; 3]>,
+    lane_ys: Vec<i32>,
+    fractions: Fractions,
+    frac_x: Vec<f64>,
+    frac_y: Vec<f64>,
+    frac_z: Vec<f64>,
+    surface_cache: HashMap<(i32, i32), i32, BuildHasherDefault<ColumnHasher>>,
+    memo: Memo,
 }
 
 impl<'a> Eval<'a> {
@@ -170,11 +287,20 @@ impl<'a> Eval<'a> {
         let mut cell_of = vec![NO_INDEX; tree.node_count()];
         let mut interpolators = Vec::new();
         let mut cell_caches = Vec::new();
-        for (id, input, kind) in tree.markers() {
+        let markers = tree.markers();
+        let mut cell_roots = vec![tree.root_node(ROOT_FINAL_DENSITY)];
+        cell_roots.extend(
+            markers
+                .iter()
+                .filter(|m| m.2 == MarkerKind::CacheAllInCell)
+                .map(|m| m.1),
+        );
+        let in_cell = tree.reachable_outside_interpolated(&cell_roots);
+        for (id, input, kind) in markers {
             match kind {
                 MarkerKind::Interpolated => {
                     interp_of[id] = interpolators.len();
-                    interpolators.push(Interpolator::new(input, &layout));
+                    interpolators.push(Interpolator::new(input, &layout, in_cell[id]));
                 }
                 MarkerKind::CacheAllInCell => {
                     cell_of[id] = cell_caches.len();
@@ -190,6 +316,42 @@ impl<'a> Eval<'a> {
             input: None,
             values: vec![0.0; layout.cell_len()],
         });
+        let root_interp = (0..tree.root_count())
+            .map(|root| match tree.node(tree.root_node(root)) {
+                Node::Marker {
+                    kind: MarkerKind::Interpolated,
+                    ..
+                } => interp_of[tree.root_node(root)],
+                _ => NO_INDEX,
+            })
+            .collect();
+        let cells = interpolators
+            .iter()
+            .map(|i| {
+                if i.cell_ready {
+                    vec![0.0; layout.cell_len()]
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let interpolators_len = interpolators.len();
+        let lanes = layout.cell_len();
+        let lane_offsets: Vec<[i32; 3]> = (0..lanes as i32)
+            .map(|index| {
+                let k = index / layout.cell_width;
+                [
+                    k % layout.cell_width,
+                    layout.cell_height - 1 - k / layout.cell_width,
+                    index % layout.cell_width,
+                ]
+            })
+            .collect();
+        let mut plan_regs = Vec::new();
+        if let Some(plan) = tree.cell_plan(ROOT_FINAL_DENSITY) {
+            plan_regs = vec![0.0; plan.register_count() * lanes];
+            plan.init(&mut plan_regs, lanes);
+        }
         Eval {
             layout,
             beard,
@@ -202,12 +364,28 @@ impl<'a> Eval<'a> {
             cell_of,
             interpolators,
             cell_caches,
-            surface_cache: HashMap::new(),
+            root_interp,
+            corner_ranges: vec![(0.0, 0.0); interpolators_len],
+            bounds: Vec::new(),
+            cells,
+            plan_regs,
+            lane_offsets,
+            lane_ys: Vec::new(),
+            fractions: Fractions::default(),
+            frac_x: fractions(layout.cell_width),
+            frac_y: fractions(layout.cell_height),
+            frac_z: fractions(layout.cell_width),
+            surface_cache: HashMap::default(),
+            memo: Memo::new(tree.node_count()),
         }
     }
 
     // Evaluates a router field with the chunk itself as the function context.
     pub fn chunk(&mut self, tree: &Tree, root: usize, x: i32, y: i32, z: i32) -> f64 {
+        let direct = self.root_interp[root];
+        if direct != NO_INDEX && !self.filling_cell {
+            return self.interpolators[direct].staged(&self.fractions);
+        }
         let saved = self.in_chunk;
         self.in_chunk = true;
         let value = tree.compute_with(tree.root_node(root), x, y, z, self);
@@ -304,11 +482,32 @@ impl<'a> Eval<'a> {
         self.cell_start[0] = (self.layout.first_cell_x + i) * self.layout.cell_width;
     }
 
-    // Selects cell y and z, then fills every cell cache in lerp3 mode.
-    pub fn select_cell_yz(&mut self, tree: &Tree, y: i32, z: i32) {
+    // Selects cell y and z and fills the cell caches unless the density bounds settle the cell.
+    pub fn select_cell_yz(&mut self, tree: &Tree, y: i32, z: i32, empty_above: i32) -> CellState {
         let layout = self.layout;
-        for interpolator in &mut self.interpolators {
+        let bottom = (y + layout.cell_noise_min_y) * layout.cell_height;
+        for (n, interpolator) in self.interpolators.iter_mut().enumerate() {
             interpolator.select_cell_yz(&layout, y, z);
+            self.corner_ranges[n] = interpolator.corner_range();
+        }
+        self.fractions.bump(0);
+        if self.beard.is_empty() {
+            match self.density_range(tree, bottom) {
+                Some((_, high)) if high < 0.0 && bottom > empty_above => return CellState::Empty,
+                Some((low, _)) if low > 0.0 => return CellState::Solid,
+                _ => {}
+            }
+        }
+        for (n, interpolator) in self.interpolators.iter().enumerate() {
+            if interpolator.cell_ready {
+                interpolator.fill_cell(
+                    &layout,
+                    &self.frac_x,
+                    &self.frac_y,
+                    &self.frac_z,
+                    &mut self.cells[n],
+                );
+            }
         }
         self.filling_cell = true;
         self.in_chunk = true;
@@ -316,6 +515,9 @@ impl<'a> Eval<'a> {
         self.cell_start[2] = (layout.first_cell_z + z) * layout.cell_width;
         for c in 0..self.cell_caches.len() {
             let input = self.cell_caches[c].input;
+            if input.is_none() && self.fill_final_density(tree) {
+                continue;
+            }
             for index in 0..layout.cell_len() as i32 {
                 let cz = index % layout.cell_width;
                 let k = index / layout.cell_width;
@@ -338,27 +540,63 @@ impl<'a> Eval<'a> {
         }
         self.filling_cell = false;
         self.in_chunk = false;
+        CellState::Mixed
+    }
+
+    // Bounds of the final density over the cell starting at a block y, when they can be proven.
+    fn density_range(&mut self, tree: &Tree, bottom: i32) -> Option<(f64, f64)> {
+        let plan = tree.cell_plan(ROOT_FINAL_DENSITY)?;
+        let top = bottom + self.layout.cell_height - 1;
+        plan.root_range(&mut self.bounds, &self.corner_ranges, bottom, top)
+    }
+
+    // Fills the final density cache lane-wise when its plan compiled, and reports whether it did.
+    fn fill_final_density(&mut self, tree: &Tree) -> bool {
+        let Some(plan) = tree.cell_plan(ROOT_FINAL_DENSITY) else {
+            return false;
+        };
+        let lanes = self.layout.cell_len();
+        self.lane_ys.clear();
+        self.lane_ys
+            .extend(self.lane_offsets.iter().map(|o| self.cell_start[1] + o[1]));
+        plan.run(&mut self.plan_regs, lanes, &self.lane_ys, &self.cells);
+        let root = plan.root() * lanes;
+        let density = &self.plan_regs[root..root + lanes];
+        let Some(cache) = self.cell_caches.last_mut() else {
+            return true;
+        };
+        let values = &mut cache.values;
+        if self.beard.is_empty() {
+            for (v, d) in values.iter_mut().zip(density) {
+                *v = *d + 0.0;
+            }
+        } else {
+            for (l, (v, d)) in values.iter_mut().zip(density).enumerate() {
+                let o = self.lane_offsets[l];
+                let x = self.cell_start[0] + o[0];
+                let z = self.cell_start[2] + o[2];
+                *v = *d + self.beard.compute(x, self.lane_ys[l], z);
+            }
+        }
+        true
     }
 
     pub fn update_for_y(&mut self, y: i32, d: f64) {
         self.in_cell[1] = y - self.cell_start[1];
-        for interpolator in &mut self.interpolators {
-            interpolator.update_for_y(d);
-        }
+        self.fractions.y = d;
+        self.fractions.bump(0);
     }
 
     pub fn update_for_x(&mut self, x: i32, d: f64) {
         self.in_cell[0] = x - self.cell_start[0];
-        for interpolator in &mut self.interpolators {
-            interpolator.update_for_x(d);
-        }
+        self.fractions.x = d;
+        self.fractions.bump(1);
     }
 
     pub fn update_for_z(&mut self, z: i32, d: f64) {
         self.in_cell[2] = z - self.cell_start[2];
-        for interpolator in &mut self.interpolators {
-            interpolator.update_for_z(d);
-        }
+        self.fractions.z = d;
+        self.fractions.bump(2);
     }
 
     pub fn swap_slices(&mut self) {
@@ -367,14 +605,28 @@ impl<'a> Eval<'a> {
         }
     }
 
-    // The final density plus beardifier cell cache at the current block.
-    pub fn cached_density(&self) -> f64 {
-        let layout = &self.layout;
-        let index = ((layout.cell_height - 1 - self.in_cell[1]) * layout.cell_width
-            + self.in_cell[0])
-            * layout.cell_width
-            + self.in_cell[2];
-        self.cell_caches[self.cell_caches.len() - 1].values[index as usize]
+    // Moves the final density cache of the selected cell out of the evaluator.
+    pub fn take_density(&mut self) -> Vec<f64> {
+        self.cell_caches
+            .last_mut()
+            .map(|c| std::mem::take(&mut c.values))
+            .unwrap_or_default()
+    }
+
+    pub fn restore_density(&mut self, values: Vec<f64>) {
+        if let Some(cache) = self.cell_caches.last_mut() {
+            cache.values = values;
+        }
+    }
+
+    // The final density cache entry of one lane of the selected cell.
+    pub fn density_at(&self, index: usize) -> f64 {
+        self.cell_caches[self.cell_caches.len() - 1].values[index]
+    }
+
+    // Fraction of a block along the cell width, as the block loop feeds it.
+    pub fn width_fraction(&self, offset: i32) -> f64 {
+        self.frac_x[offset as usize]
     }
 
     fn flat_cache(&mut self, tree: &Tree, id: usize, input: usize, x: i32, y: i32, z: i32) -> f64 {
@@ -382,7 +634,7 @@ impl<'a> Eval<'a> {
         let qx = (x >> 2) - self.layout.first_noise_x;
         let qz = (z >> 2) - self.layout.first_noise_z;
         if qx < 0 || qz < 0 || qx >= size || qz >= size {
-            return tree.compute_with(input, x, y, z, self);
+            return tree.eval_here(input, x, y, z, self);
         }
         if self.flat[id].is_none() {
             let saved = self.in_chunk;
@@ -407,6 +659,10 @@ impl<'a> Eval<'a> {
 }
 
 impl Hooks for Eval<'_> {
+    fn memo(&mut self) -> &mut Memo {
+        &mut self.memo
+    }
+
     fn marker(
         &mut self,
         tree: &Tree,
@@ -420,15 +676,22 @@ impl Hooks for Eval<'_> {
         match kind {
             MarkerKind::FlatCache => self.flat_cache(tree, id, input, x, y, z),
             MarkerKind::Interpolated if self.in_chunk && self.interp_of[id] != NO_INDEX => {
-                let interpolator = &self.interpolators[self.interp_of[id]];
-                if self.filling_cell {
+                let interpolator = &mut self.interpolators[self.interp_of[id]];
+                if !self.filling_cell {
+                    interpolator.staged(&self.fractions)
+                } else if interpolator.cell_ready {
+                    let layout = &self.layout;
+                    let [i, j, k] = self.in_cell;
+                    let index = ((layout.cell_height - 1 - j) * layout.cell_width + i)
+                        * layout.cell_width
+                        + k;
+                    self.cells[self.interp_of[id]][index as usize]
+                } else {
                     interpolator.cell_value(
                         self.in_cell[0] as f64 / self.layout.cell_width as f64,
                         self.in_cell[1] as f64 / self.layout.cell_height as f64,
                         self.in_cell[2] as f64 / self.layout.cell_width as f64,
                     )
-                } else {
-                    interpolator.value
                 }
             }
             MarkerKind::CacheAllInCell if self.in_chunk && self.cell_of[id] != NO_INDEX => {
@@ -446,10 +709,10 @@ impl Hooks for Eval<'_> {
                         + k;
                     self.cell_caches[self.cell_of[id]].values[index as usize]
                 } else {
-                    tree.compute_with(input, x, y, z, self)
+                    tree.eval_here(input, x, y, z, self)
                 }
             }
-            _ => tree.compute_with(input, x, y, z, self),
+            _ => tree.eval_here(input, x, y, z, self),
         }
     }
 
@@ -477,6 +740,10 @@ mod tests {
         Tree::build(&spec).unwrap()
     }
 
+    fn fractions_of(count: i32) -> Vec<f64> {
+        fractions(count)
+    }
+
     fn layout() -> Layout {
         Layout::new(1, 2, 32, -16, -64, 384)
     }
@@ -498,7 +765,7 @@ mod tests {
     #[test]
     fn interpolator_stages_match_manual_lerps() {
         let layout = layout();
-        let mut interpolator = Interpolator::new(0, &layout);
+        let mut interpolator = Interpolator::new(0, &layout, false);
         for (i, v) in interpolator.slice0.iter_mut().enumerate() {
             *v = (i as f64 * 0.37).sin();
         }
@@ -507,9 +774,12 @@ mod tests {
         }
         interpolator.select_cell_yz(&layout, 3, 2);
         let n = interpolator.noise;
-        interpolator.update_for_y(0.375);
-        interpolator.update_for_x(0.25);
-        interpolator.update_for_z(0.5);
+        let mut fractions = Fractions::default();
+        fractions.bump(0);
+        fractions.y = 0.375;
+        fractions.x = 0.25;
+        fractions.z = 0.5;
+        interpolator.staged(&fractions);
         let z0 = mth::lerp(
             0.25,
             mth::lerp(0.375, n[0], n[4]),
@@ -521,6 +791,18 @@ mod tests {
             mth::lerp(0.375, n[3], n[7]),
         );
         assert_eq!(interpolator.value, mth::lerp(0.5, z0, z1));
+        let mut ready = Interpolator::new(0, &layout, true);
+        ready.noise = n;
+        let mut cell = vec![0.0; layout.cell_len()];
+        ready.fill_cell(
+            &layout,
+            &fractions_of(4),
+            &fractions_of(8),
+            &fractions_of(4),
+            &mut cell,
+        );
+        let index = ((8 - 1 - 3) * 4 + 1) * 4 + 2;
+        assert_eq!(cell[index], ready.cell_value(0.25, 0.375, 0.5));
         let direct = interpolator.cell_value(0.25, 0.375, 0.5);
         assert!((direct - interpolator.value).abs() < 1e-12);
     }
@@ -546,13 +828,14 @@ mod tests {
         let mut eval = Eval::new(&tree, l, &beard);
         eval.initialize_for_first_cell_x(&tree);
         eval.advance_cell_x(&tree, 0);
-        eval.select_cell_yz(&tree, 40, 1);
+        eval.select_cell_yz(&tree, 40, 1, i32::MAX);
         let y = (40 + l.cell_noise_min_y) * l.cell_height + 5;
         eval.update_for_y(y, 5.0 / 8.0);
         eval.update_for_x(33, 0.25);
         eval.update_for_z(-16 + 4 + 2, 0.5);
         let expected = tree.compute(0, 33, y, -16 + 4 + 2);
-        assert!((eval.cached_density() - expected).abs() < 1e-12);
+        let lane = ((l.cell_height - 1 - 5) * l.cell_width + 1) * l.cell_width + 2;
+        assert!((eval.density_at(lane as usize) - expected).abs() < 1e-12);
     }
 
     #[test]
@@ -575,5 +858,55 @@ mod tests {
         let mut eval = Eval::new(&tree, layout(), &beard);
         let value = eval.point(&tree, 0, 1, 100, 1);
         assert_eq!(value, tree.compute(0, 1, 100, 1));
+    }
+
+    #[test]
+    fn density_bounds_enclose_every_lane() {
+        let tree = Tree::build(&crate::fixture::spec(3)).unwrap();
+        let beard = Beardifier::default();
+        let l = Layout::new(1, 2, 0, 0, -64, 384);
+        let mut eval = Eval::new(&tree, l, &beard);
+        let plan = tree.cell_plan(ROOT_FINAL_DENSITY).unwrap();
+        let lanes = l.cell_len();
+        let mut state = 99u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut proven = 0;
+        for trial in 0..3000 {
+            let scale = [0.01, 0.5, 2.0, 40.0][trial % 4];
+            let shift = [-1.0, 0.0, 1.0][trial % 3] * scale;
+            for n in 0..eval.interpolators.len() {
+                if !eval.interpolators[n].cell_ready {
+                    continue;
+                }
+                let base = shift + (next() - 0.5) * scale;
+                let mut corners = [0.0; 8];
+                for corner in &mut corners {
+                    *corner = base + (next() - 0.5) * scale * 0.5;
+                }
+                eval.interpolators[n].noise = corners;
+                eval.corner_ranges[n] = eval.interpolators[n].corner_range();
+                let (fx, fy, fz) = (&eval.frac_x, &eval.frac_y, &eval.frac_z);
+                eval.interpolators[n].fill_cell(&l, fx, fy, fz, &mut eval.cells[n]);
+            }
+            let bottom = -64 + (trial as i32 % 48) * 8;
+            eval.lane_ys.clear();
+            eval.lane_ys
+                .extend(eval.lane_offsets.iter().map(|o| bottom + o[1]));
+            plan.run(&mut eval.plan_regs, lanes, &eval.lane_ys, &eval.cells);
+            let root = plan.root() * lanes;
+            let range = eval.density_range(&tree, bottom);
+            if let Some((low, high)) = range {
+                proven += 1;
+                for d in &eval.plan_regs[root..root + lanes] {
+                    assert!(*d >= low && *d <= high, "{d} outside {low}..{high}");
+                }
+            }
+        }
+        assert!(proven > 1000);
     }
 }

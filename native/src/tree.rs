@@ -1,8 +1,10 @@
+use crate::cell::CellPlan;
 use crate::mth::{self, clamp, java_max, java_min};
 use crate::noise::{BlendedNoise, NormalNoise};
 use crate::random::{
     LegacyRandomSource, PositionalRandomFactory, RandomSource, XoroshiroRandomSource,
 };
+use std::sync::OnceLock;
 
 pub const CONSTANT: i32 = 0;
 pub const ADD: i32 = 1;
@@ -156,8 +158,45 @@ enum Spline {
     },
 }
 
+// Per point results of shared nodes, valid while their stamp is the current one.
+pub struct Memo {
+    stamp: Vec<u32>,
+    value: Vec<f64>,
+    current: u32,
+    issued: u32,
+}
+
+impl Memo {
+    pub fn new(nodes: usize) -> Memo {
+        Memo {
+            stamp: vec![0; nodes],
+            value: vec![0.0; nodes],
+            current: 0,
+            issued: 0,
+        }
+    }
+
+    // Starts a fresh point context and returns the one it replaces.
+    fn begin(&mut self) -> u32 {
+        let saved = self.current;
+        self.issued = self.issued.wrapping_add(1);
+        if self.issued == 0 {
+            self.stamp.fill(0);
+            self.issued = 1;
+        }
+        self.current = self.issued;
+        saved
+    }
+
+    fn end(&mut self, saved: u32) {
+        self.current = saved;
+    }
+}
+
 // Callbacks that let a chunk evaluator replace marker and beardifier nodes.
 pub trait Hooks {
+    fn memo(&mut self) -> &mut Memo;
+
     #[allow(clippy::too_many_arguments)]
     fn marker(
         &mut self,
@@ -173,9 +212,13 @@ pub trait Hooks {
     fn beardifier(&mut self, x: i32, y: i32, z: i32) -> f64;
 }
 
-struct Plain;
+struct Plain(Memo);
 
 impl Hooks for Plain {
+    fn memo(&mut self) -> &mut Memo {
+        &mut self.0
+    }
+
     fn marker(
         &mut self,
         tree: &Tree,
@@ -186,7 +229,7 @@ impl Hooks for Plain {
         y: i32,
         z: i32,
     ) -> f64 {
-        tree.compute_with(input, x, y, z, self)
+        tree.eval_here(input, x, y, z, self)
     }
 
     fn beardifier(&mut self, _x: i32, _y: i32, _z: i32) -> f64 {
@@ -201,6 +244,8 @@ pub struct Tree {
     blended: Vec<BlendedNoise>,
     splines: Vec<Spline>,
     roots: Vec<usize>,
+    shared: Vec<bool>,
+    plans: Vec<OnceLock<Option<CellPlan>>>,
 }
 
 fn lerp_f32(f: f32, g: f32, h: f32) -> f32 {
@@ -232,7 +277,7 @@ fn find_interval_start(locations: &[f32], f: f32) -> i32 {
     i - 1
 }
 
-fn mapped(kind: MappedKind, d: f64) -> f64 {
+pub fn mapped(kind: MappedKind, d: f64) -> f64 {
     match kind {
         MappedKind::Abs => d.abs(),
         MappedKind::Square => d * d,
@@ -381,6 +426,74 @@ fn build_blended(
         ),
     }
     .ok_or_else(failed)
+}
+
+// Pushes the direct child nodes of a node, except the coordinates of splines.
+fn children(node: &Node, out: &mut Vec<usize>) {
+    match *node {
+        Node::Add(a, b) | Node::Mul(a, b) | Node::Min(a, b) | Node::Max(a, b) => {
+            out.extend([a, b]);
+        }
+        Node::MulOrAdd { input, .. }
+        | Node::Mapped { input, .. }
+        | Node::Clamp { input, .. }
+        | Node::Marker { input, .. }
+        | Node::BlendDensity(input)
+        | Node::WeirdScaled { input, .. } => out.push(input),
+        Node::ShiftedNoise {
+            shift_x,
+            shift_y,
+            shift_z,
+            ..
+        } => out.extend([shift_x, shift_y, shift_z]),
+        Node::RangeChoice {
+            input,
+            in_range,
+            out_of_range,
+            ..
+        } => out.extend([input, in_range, out_of_range]),
+        Node::FindTopSurface {
+            density,
+            upper_bound,
+            ..
+        } => out.extend([density, upper_bound]),
+        _ => {}
+    }
+}
+
+// Marks the nodes that more than one parent or root reaches and that cost something to compute.
+fn shared_nodes(nodes: &[Node], splines: &[Spline], roots: &[usize]) -> Vec<bool> {
+    let mut uses = vec![0u32; nodes.len()];
+    for r in roots {
+        uses[*r] += 1;
+    }
+    let mut kids = Vec::new();
+    for node in nodes {
+        kids.clear();
+        children(node, &mut kids);
+        for kid in &kids {
+            uses[*kid] += 1;
+        }
+    }
+    for spline in splines {
+        if let Spline::Multipoint { coordinate, .. } = spline {
+            uses[*coordinate] += 1;
+        }
+    }
+    nodes
+        .iter()
+        .zip(uses)
+        .map(|(node, count)| {
+            count > 1
+                && !matches!(
+                    node,
+                    Node::Constant(_)
+                        | Node::BlendAlpha
+                        | Node::BlendOffset
+                        | Node::YGradient { .. }
+                )
+        })
+        .collect()
 }
 
 impl Tree {
@@ -560,13 +673,30 @@ impl Tree {
             roots.push(index(*r, nodes.len(), "root")?);
         }
 
+        let shared = shared_nodes(&nodes, &splines, &roots);
+        let plans = (0..roots.len()).map(|_| OnceLock::new()).collect();
         Ok(Tree {
             nodes,
             noises,
             blended,
             splines,
             roots,
+            shared,
+            plans,
         })
+    }
+
+    // The lane-wise plan of a router field, compiled on first use.
+    pub fn cell_plan(&self, root: usize) -> Option<&CellPlan> {
+        self.plans
+            .get(root)?
+            .get_or_init(|| CellPlan::compile(self, self.roots[root]))
+            .as_ref()
+    }
+
+    // Returns a node by id.
+    pub fn node(&self, id: usize) -> Node {
+        self.nodes[id]
     }
 
     pub fn root_count(&self) -> usize {
@@ -578,8 +708,20 @@ impl Tree {
         self.roots.get(root).map(|r| self.compute(*r, x, y, z))
     }
 
+    // Evaluates a router field at xyz block triples, sharing one memo across the points.
+    pub fn compute_root_points(&self, root: usize, points: &[i32]) -> Option<Vec<f64>> {
+        let id = *self.roots.get(root)?;
+        let mut plain = Plain(Memo::new(self.nodes.len()));
+        Some(
+            points
+                .chunks_exact(3)
+                .map(|p| self.compute_with(id, p[0], p[1], p[2], &mut plain))
+                .collect(),
+        )
+    }
+
     pub fn compute(&self, id: usize, x: i32, y: i32, z: i32) -> f64 {
-        self.compute_with(id, x, y, z, &mut Plain)
+        self.compute_with(id, x, y, z, &mut Plain(Memo::new(self.nodes.len())))
     }
 
     // Returns the node id of a router field.
@@ -599,46 +741,99 @@ impl Tree {
             .collect()
     }
 
+    // Marks the nodes reachable from the roots without looking inside interpolated markers.
+    pub fn reachable_outside_interpolated(&self, roots: &[usize]) -> Vec<bool> {
+        let mut seen = vec![false; self.nodes.len()];
+        let mut stack = roots.to_vec();
+        while let Some(id) = stack.pop() {
+            if seen[id] {
+                continue;
+            }
+            seen[id] = true;
+            match self.nodes[id] {
+                Node::Marker {
+                    kind: MarkerKind::Interpolated,
+                    ..
+                } => {}
+                Node::Spline(spline) => self.spline_coordinates(spline, &mut stack),
+                node => children(&node, &mut stack),
+            }
+        }
+        seen
+    }
+
+    fn spline_coordinates(&self, id: usize, out: &mut Vec<usize>) {
+        if let Spline::Multipoint {
+            coordinate, values, ..
+        } = &self.splines[id]
+        {
+            out.push(*coordinate);
+            for value in values {
+                self.spline_coordinates(*value, out);
+            }
+        }
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
+    // Evaluates a node as a new point context.
     pub fn compute_with<H: Hooks>(&self, id: usize, x: i32, y: i32, z: i32, h: &mut H) -> f64 {
+        let saved = h.memo().begin();
+        let value = self.eval_here(id, x, y, z, h);
+        h.memo().end(saved);
+        value
+    }
+
+    // Evaluates a node inside the point context already running.
+    pub fn eval_here<H: Hooks>(&self, id: usize, x: i32, y: i32, z: i32, h: &mut H) -> f64 {
+        if !self.shared[id] {
+            return self.eval_node(id, x, y, z, h);
+        }
+        let memo = h.memo();
+        if memo.stamp[id] == memo.current {
+            return memo.value[id];
+        }
+        let value = self.eval_node(id, x, y, z, h);
+        let memo = h.memo();
+        memo.stamp[id] = memo.current;
+        memo.value[id] = value;
+        value
+    }
+
+    fn eval_node<H: Hooks>(&self, id: usize, x: i32, y: i32, z: i32, h: &mut H) -> f64 {
         match self.nodes[id] {
             Node::Constant(v) => v,
-            Node::Add(a, b) => self.compute_with(a, x, y, z, h) + self.compute_with(b, x, y, z, h),
+            Node::Add(a, b) => self.eval_here(a, x, y, z, h) + self.eval_here(b, x, y, z, h),
             Node::Mul(a, b) => {
-                let d = self.compute_with(a, x, y, z, h);
+                let d = self.eval_here(a, x, y, z, h);
                 if d == 0.0 {
                     0.0
                 } else {
-                    d * self.compute_with(b, x, y, z, h)
+                    d * self.eval_here(b, x, y, z, h)
                 }
             }
-            Node::Min(a, b) => java_min(
-                self.compute_with(a, x, y, z, h),
-                self.compute_with(b, x, y, z, h),
-            ),
-            Node::Max(a, b) => java_max(
-                self.compute_with(a, x, y, z, h),
-                self.compute_with(b, x, y, z, h),
-            ),
+            Node::Min(a, b) => {
+                java_min(self.eval_here(a, x, y, z, h), self.eval_here(b, x, y, z, h))
+            }
+            Node::Max(a, b) => {
+                java_max(self.eval_here(a, x, y, z, h), self.eval_here(b, x, y, z, h))
+            }
             Node::MulOrAdd {
                 input,
                 add,
                 argument,
             } => {
-                let d = self.compute_with(input, x, y, z, h);
+                let d = self.eval_here(input, x, y, z, h);
                 if add {
                     d + argument
                 } else {
                     d * argument
                 }
             }
-            Node::Mapped { input, kind } => mapped(kind, self.compute_with(input, x, y, z, h)),
-            Node::Clamp { input, min, max } => {
-                clamp(self.compute_with(input, x, y, z, h), min, max)
-            }
+            Node::Mapped { input, kind } => mapped(kind, self.eval_here(input, x, y, z, h)),
+            Node::Clamp { input, min, max } => clamp(self.eval_here(input, x, y, z, h), min, max),
             Node::Marker { input, kind } => h.marker(self, id, input, kind, x, y, z),
             Node::Noise {
                 noise,
@@ -660,9 +855,9 @@ impl Tree {
                 xz_scale,
                 y_scale,
             } => {
-                let d = x as f64 * xz_scale + self.compute_with(shift_x, x, y, z, h);
-                let e = y as f64 * y_scale + self.compute_with(shift_y, x, y, z, h);
-                let f = z as f64 * xz_scale + self.compute_with(shift_z, x, y, z, h);
+                let d = x as f64 * xz_scale + self.eval_here(shift_x, x, y, z, h);
+                let e = y as f64 * y_scale + self.eval_here(shift_y, x, y, z, h);
+                let f = z as f64 * xz_scale + self.eval_here(shift_z, x, y, z, h);
                 self.noises[noise].get_value(d, e, f)
             }
             Node::WeirdScaled {
@@ -670,7 +865,7 @@ impl Tree {
                 noise,
                 type2,
             } => {
-                let e = rarity(type2, self.compute_with(input, x, y, z, h));
+                let e = rarity(type2, self.eval_here(input, x, y, z, h));
                 e * self.noises[noise]
                     .get_value(x as f64 / e, y as f64 / e, z as f64 / e)
                     .abs()
@@ -682,11 +877,11 @@ impl Tree {
                 min_inclusive,
                 max_exclusive,
             } => {
-                let d = self.compute_with(input, x, y, z, h);
+                let d = self.eval_here(input, x, y, z, h);
                 if d >= min_inclusive && d < max_exclusive {
-                    self.compute_with(in_range, x, y, z, h)
+                    self.eval_here(in_range, x, y, z, h)
                 } else {
-                    self.compute_with(out_of_range, x, y, z, h)
+                    self.eval_here(out_of_range, x, y, z, h)
                 }
             }
             Node::YGradient {
@@ -704,7 +899,7 @@ impl Tree {
                 lower_bound,
                 cell_height,
             } => {
-                let i = mth::floor(self.compute_with(upper_bound, x, y, z, h) / cell_height as f64)
+                let i = mth::floor(self.eval_here(upper_bound, x, y, z, h) / cell_height as f64)
                     .wrapping_mul(cell_height);
                 if i <= lower_bound {
                     return lower_bound as f64;
@@ -721,7 +916,7 @@ impl Tree {
             Node::BlendAlpha => 1.0,
             Node::BlendOffset => 0.0,
             Node::Beardifier => h.beardifier(x, y, z),
-            Node::BlendDensity(input) => self.compute_with(input, x, y, z, h),
+            Node::BlendDensity(input) => self.eval_here(input, x, y, z, h),
             Node::BlendedNoise(blended) => self.blended[blended].compute(x, y, z),
             Node::Spline(spline) => self.spline(spline, x, y, z, h) as f64,
         }
@@ -740,7 +935,7 @@ impl Tree {
                 derivatives,
                 values,
             } => {
-                let f = self.compute_with(*coordinate, x, y, z, hk) as f32;
+                let f = self.eval_here(*coordinate, x, y, z, hk) as f32;
                 let i = find_interval_start(locations, f);
                 let j = locations.len() - 1;
                 if i < 0 {

@@ -1,6 +1,6 @@
 use crate::aquifer::{self, Aquifer};
 use crate::beard::Beardifier;
-use crate::noisechunk::{Eval, Layout};
+use crate::noisechunk::{CellState, Eval, Layout};
 use crate::random::{
     LegacyPositionalRandomFactory, LegacyRandomSource, PositionalRandomFactory, RandomSource,
     XoroshiroPositionalRandomFactory, XoroshiroRandomSource,
@@ -178,11 +178,15 @@ impl Stage {
         self.flags[index] & FLAG_WATER != 0
     }
 
+    fn has_fluid(&self, index: usize) -> bool {
+        self.flags[index] & (FLAG_WATER | FLAG_LAVA) != 0
+    }
+
     fn blocks_motion(&self, index: usize) -> bool {
         self.flags[index] & FLAG_BLOCKS_MOTION != 0
     }
 
-    // Runs the NOISE stage for a chunk and returns two heightmaps then palette indices.
+    // Runs the NOISE stage: two heightmaps, palette indices, then a mark count and packed mark indices.
     pub fn fill(
         &self,
         chunk_x: i32,
@@ -209,31 +213,43 @@ impl Stage {
             noise_height,
         );
 
-        let mut blocks = vec![self.air() as i32; 256 * total_height as usize];
+        let mut result = vec![self.air() as i32; 512 + 256 * total_height as usize];
+        let mut marks = Vec::new();
+        let (maps, blocks) = result.split_at_mut(512);
         if layout.cell_count_y > 0 {
             self.fill_blocks(
                 &layout,
                 &beard,
                 (min_x, min_z, noise_min_y, noise_height),
                 chunk_min_y,
-                &mut blocks,
+                blocks,
+                &mut marks,
             );
         }
 
-        let mut result = vec![chunk_min_y; 512];
-        for column in 0..256usize {
-            for y in (0..total_height).rev() {
+        maps.fill(chunk_min_y);
+        let mut open = 256;
+        for y in (0..total_height).rev() {
+            if open == 0 {
+                break;
+            }
+            for column in 0..256usize {
+                if maps[column] != chunk_min_y {
+                    continue;
+                }
                 let state = blocks[y as usize * 256 + column] as usize;
-                if result[256 + column] == chunk_min_y && !self.is_air(state) {
-                    result[256 + column] = chunk_min_y + y + 1;
+                if maps[256 + column] == chunk_min_y && !self.is_air(state) {
+                    maps[256 + column] = chunk_min_y + y + 1;
                 }
                 if self.blocks_motion(state) {
-                    result[column] = chunk_min_y + y + 1;
-                    break;
+                    maps[column] = chunk_min_y + y + 1;
+                    open -= 1;
                 }
             }
         }
-        result.extend(blocks);
+        marks.sort_unstable();
+        result.push(marks.len() as i32);
+        result.extend(marks);
         Ok(result)
     }
 
@@ -244,12 +260,14 @@ impl Stage {
         origin: (i32, i32, i32, i32),
         chunk_min_y: i32,
         blocks: &mut [i32],
+        marks: &mut Vec<i32>,
     ) {
         let (min_x, min_z, noise_min_y, noise_height) = origin;
         let tree = &*self.tree;
         let mut eval = Eval::new(tree, *layout, beard);
         let mut aquifer = if self.aquifers {
             Some(Aquifer::new(
+                self,
                 tree,
                 &mut eval,
                 min_x,
@@ -261,6 +279,9 @@ impl Stage {
             None
         };
 
+        let empty_above = aquifer
+            .as_ref()
+            .map_or(i32::MIN, |a| a.skip_sampling_above_y());
         let cw = layout.cell_width;
         let ch = layout.cell_height;
         eval.initialize_for_first_cell_x(tree);
@@ -268,24 +289,82 @@ impl Stage {
             eval.advance_cell_x(tree, q);
             for r in 0..layout.cell_count_xz {
                 for t in (0..layout.cell_count_y).rev() {
-                    eval.select_cell_yz(tree, t, r);
+                    let cell = eval.select_cell_yz(tree, t, r, empty_above);
+                    if cell == CellState::Empty {
+                        for u in 0..ch {
+                            let v = (layout.cell_noise_min_y + t) * ch + u;
+                            let state = aquifer::global_fluid(self, v).at(v, self.air());
+                            if state != self.air() {
+                                for y in 0..cw {
+                                    for ab in 0..cw {
+                                        let index = ((v - chunk_min_y) as usize) * 256
+                                            + ((min_z + r * cw + ab) & 15) as usize * 16
+                                            + ((min_x + q * cw + y) & 15) as usize;
+                                        blocks[index] = state as i32;
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    let densities = if cell == CellState::Solid {
+                        Vec::new()
+                    } else {
+                        eval.take_density()
+                    };
                     for u in (0..ch).rev() {
                         let v = (layout.cell_noise_min_y + t) * ch + u;
                         eval.update_for_y(v, u as f64 / ch as f64);
+                        let surface_fluid = match &aquifer {
+                            Some(a) if v > a.skip_sampling_above_y() => {
+                                Some(aquifer::global_fluid(self, v).at(v, self.air()))
+                            }
+                            _ => None,
+                        };
+                        let solid_default = !(self.ore_veins && vein::may_apply(v));
                         for y in 0..cw {
                             let x = min_x + q * cw + y;
-                            eval.update_for_x(x, y as f64 / cw as f64);
+                            eval.update_for_x(x, eval.width_fraction(y));
                             for ab in 0..cw {
                                 let z = min_z + r * cw + ab;
-                                eval.update_for_z(z, ab as f64 / cw as f64);
-                                let state =
-                                    self.block_state(tree, &mut eval, &mut aquifer, x, v, z);
+                                let lane = (((ch - 1 - u) * cw + y) * cw + ab) as usize;
+                                let density = if cell == CellState::Solid {
+                                    1.0
+                                } else {
+                                    densities[lane]
+                                };
+                                let mut sampled = false;
+                                let state = match (density > 0.0, surface_fluid) {
+                                    (true, _) if solid_default => self.roles.default_block,
+                                    (false, Some(fluid)) => fluid,
+                                    _ => {
+                                        sampled = true;
+                                        eval.update_for_z(z, eval.width_fraction(ab));
+                                        self.block_state(
+                                            tree,
+                                            &mut eval,
+                                            &mut aquifer,
+                                            (x, v, z),
+                                            density,
+                                        )
+                                    }
+                                };
                                 let index = ((v - chunk_min_y) as usize) * 256
                                     + ((z & 15) as usize) * 16
                                     + (x & 15) as usize;
                                 blocks[index] = state as i32;
+                                let scheduled = sampled
+                                    && aquifer
+                                        .as_ref()
+                                        .is_some_and(|a| a.should_schedule_fluid_update());
+                                if scheduled && self.has_fluid(state) {
+                                    marks.push(index as i32);
+                                }
                             }
                         }
+                    }
+                    if cell != CellState::Solid {
+                        eval.restore_density(densities);
                     }
                 }
             }
@@ -298,11 +377,9 @@ impl Stage {
         tree: &Tree,
         eval: &mut Eval,
         aquifer: &mut Option<Aquifer>,
-        x: i32,
-        y: i32,
-        z: i32,
+        (x, y, z): (i32, i32, i32),
+        density: f64,
     ) -> usize {
-        let density = eval.cached_density();
         let substance = match aquifer {
             Some(aquifer) => aquifer.compute_substance(self, tree, eval, x, y, z, density),
             None => aquifer::disabled_substance(self, y, density),

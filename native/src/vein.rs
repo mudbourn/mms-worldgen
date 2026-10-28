@@ -11,6 +11,14 @@ const MAX_RICHNESS_THRESHOLD: f32 = 0.6;
 const CHANCE_OF_RAW_ORE_BLOCK: f32 = 0.02;
 const SKIP_ORE_IF_GAP_NOISE_IS_BELOW: f32 = -0.3;
 
+const COPPER_RANGE: (i32, i32) = (0, 50);
+const IRON_RANGE: (i32, i32) = (-60, -8);
+
+// Whether any vein type can place a block at this height.
+pub fn may_apply(y: i32) -> bool {
+    y >= COPPER_RANGE.0.min(IRON_RANGE.0) && y <= COPPER_RANGE.1.max(IRON_RANGE.1)
+}
+
 // Ore vein substance at a block position: None leaves the block to the default.
 pub fn substance(
     stage: &Stage,
@@ -22,7 +30,7 @@ pub fn substance(
 ) -> Option<usize> {
     let d = eval.chunk(tree, ROOT_VEIN_TOGGLE, x, y, z);
     let copper = d > 0.0;
-    let (min_y, max_y) = if copper { (0, 50) } else { (-60, -8) };
+    let (min_y, max_y) = if copper { COPPER_RANGE } else { IRON_RANGE };
     let e = d.abs();
     let j = max_y - y;
     let k = y - min_y;

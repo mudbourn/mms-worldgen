@@ -137,11 +137,17 @@ pub struct Aquifer {
     skip_sampling_above_y: i32,
     status_cache: Vec<Option<FluidStatus>>,
     locations: Vec<Option<[i32; 3]>>,
+    order: [[i32; 3]; 12],
+    near_cell: [i32; 3],
+    near_index: [usize; 12],
+    near_location: [[i32; 3]; 12],
+    schedule_fluid_update: bool,
 }
 
 impl Aquifer {
     // Sets up the grid for a chunk at block min x and z over the clamped noise range.
     pub fn new(
+        stage: &Stage,
         tree: &Tree,
         eval: &mut Eval,
         chunk_min_x: i32,
@@ -177,7 +183,21 @@ impl Aquifer {
             skip_sampling_above_y: from_grid_y(q, 11) - 1,
             status_cache: vec![None; total],
             locations: vec![None; total],
+            order: candidate_order(stage.c2me_candidate_order),
+            near_cell: [i32::MIN; 3],
+            near_index: [0; 12],
+            near_location: [[0; 3]; 12],
+            schedule_fluid_update: false,
         }
+    }
+
+    // Whether the last substance asks for a fluid update after generation.
+    pub fn should_schedule_fluid_update(&self) -> bool {
+        self.schedule_fluid_update
+    }
+
+    pub fn skip_sampling_above_y(&self) -> i32 {
+        self.skip_sampling_above_y
     }
 
     fn index(&self, i: i32, j: i32, k: i32) -> usize {
@@ -199,6 +219,7 @@ impl Aquifer {
         k: i32,
         d: f64,
     ) -> Option<usize> {
+        self.schedule_fluid_update = false;
         if d > 0.0 {
             return None;
         }
@@ -215,64 +236,43 @@ impl Aquifer {
         let l = grid_x(i - 5);
         let m = grid_y(j + 1);
         let n = grid_z(k - 5);
-        let mut o = i32::MAX;
-        let mut p = i32::MAX;
-        let mut q = i32::MAX;
-        let mut r = i32::MAX;
-        let mut s = 0usize;
-        let mut t = 0usize;
-        let mut u = 0usize;
-        for [w, x, y] in candidate_order(stage.c2me_candidate_order) {
-            let z = l + w;
-            let aa = m + x;
-            let ab = n + y;
-            let ac = self.index(z, aa, ab);
-            let location = match self.locations[ac] {
-                Some(location) => location,
-                None => {
-                    let mut random = stage.aquifer_random.at(z, aa, ab);
-                    let lx = from_grid_x(z, random.next_int_bound(10));
-                    let ly = from_grid_y(aa, random.next_int_bound(9));
-                    let lz = from_grid_z(ab, random.next_int_bound(10));
-                    self.locations[ac] = Some([lx, ly, lz]);
-                    [lx, ly, lz]
-                }
-            };
+        if self.near_cell != [l, m, n] {
+            self.load_candidates(stage, l, m, n);
+        }
+        let (mut first, mut second, mut third, mut fourth) =
+            (u32::MAX, u32::MAX, u32::MAX, u32::MAX);
+        for (c, location) in self.near_location.iter().enumerate() {
             let af = location[0] - i;
             let ag = location[1] - j;
             let ah = location[2] - k;
-            let ai = af * af + ag * ag + ah * ah;
-            if o >= ai {
-                u = t;
-                t = s;
-                s = ac;
-                r = q;
-                q = p;
-                p = o;
-                o = ai;
-            } else if p >= ai {
-                u = t;
-                t = ac;
-                r = q;
-                q = p;
-                p = ai;
-            } else if q >= ai {
-                u = ac;
-                r = q;
-                q = ai;
-            } else if r >= ai {
-                r = ai;
-            }
+            let key = (((af * af + ag * ag + ah * ah) as u32) << 4) | (15 - c as u32);
+            fourth = fourth.min(third.max(key));
+            third = third.min(second.max(key));
+            second = second.min(first.max(key));
+            first = first.min(key);
         }
+        let o = (first >> 4) as i32;
+        let p = (second >> 4) as i32;
+        let q = (third >> 4) as i32;
+        let r = (fourth >> 4) as i32;
+        let s = self.near_index[15 - (first & 15) as usize];
+        let t = self.near_index[15 - (second & 15) as usize];
+        let u = self.near_index[15 - (third & 15) as usize];
+        let v = self.near_index[15 - (fourth & 15) as usize];
 
         let fluid_status2 = self.status(stage, tree, eval, s);
         let e = similarity(o, p);
         let block_state = fluid_status2.at(j, air);
         if e <= 0.0 {
+            if e >= flowing_update_similarity() {
+                let fluid_status3 = self.status(stage, tree, eval, t);
+                self.schedule_fluid_update = fluid_status2 != fluid_status3;
+            }
             return Some(block_state);
         }
 
         if stage.is_water(block_state) && stage.is_lava(global_fluid(stage, j - 1).at(j - 1, air)) {
+            self.schedule_fluid_update = true;
             return Some(block_state);
         }
 
@@ -328,7 +328,44 @@ impl Aquifer {
             }
         }
 
+        let flowing = flowing_update_similarity();
+        let bl = fluid_status2 != fluid_status4;
+        let bl2 = h >= flowing && fluid_status4 != fluid_status5;
+        let bl3 = g >= flowing && fluid_status2 != fluid_status5;
+        self.schedule_fluid_update = if !bl && !bl2 && !bl3 {
+            g >= flowing
+                && similarity(o, r) >= flowing
+                && fluid_status2 != self.status(stage, tree, eval, v)
+        } else {
+            true
+        };
+
         Some(block_state)
+    }
+
+    // Loads the twelve candidate cells around a grid cell in their tie-break order.
+    fn load_candidates(&mut self, stage: &Stage, l: i32, m: i32, n: i32) {
+        for c in 0..12 {
+            let [w, x, y] = self.order[c];
+            let z = l + w;
+            let aa = m + x;
+            let ab = n + y;
+            let ac = self.index(z, aa, ab);
+            let location = match self.locations[ac] {
+                Some(location) => location,
+                None => {
+                    let mut random = stage.aquifer_random.at(z, aa, ab);
+                    let lx = from_grid_x(z, random.next_int_bound(10));
+                    let ly = from_grid_y(aa, random.next_int_bound(9));
+                    let lz = from_grid_z(ab, random.next_int_bound(10));
+                    self.locations[ac] = Some([lx, ly, lz]);
+                    [lx, ly, lz]
+                }
+            };
+            self.near_index[c] = ac;
+            self.near_location[c] = location;
+        }
+        self.near_cell = [l, m, n];
     }
 
     fn status(&mut self, stage: &Stage, tree: &Tree, eval: &mut Eval, index: usize) -> FluidStatus {

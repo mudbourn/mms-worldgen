@@ -7,6 +7,7 @@
     "ParityChunkGeneratorMixin",
     "ParityChunkStatusTasksMixin",
     "RustChunkStatusTasksMixin",
+    "RustFillMixin",
     "RustFillTimingMixin",
     "SchedDistanceManagerAccessor",
     "SchedPlayerTicketTrackerAccessor",

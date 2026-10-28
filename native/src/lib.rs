@@ -1,5 +1,6 @@
 pub mod aquifer;
 pub mod beard;
+pub mod cell;
 pub mod mth;
 pub mod noise;
 pub mod noisechunk;
@@ -8,6 +9,9 @@ pub mod sample;
 pub mod stage;
 pub mod tree;
 pub mod vein;
+
+#[cfg(test)]
+mod fixture;
 
 use jni::objects::{JClass, JDoubleArray, JIntArray, JObjectArray, JString};
 use jni::sys::{jboolean, jdoubleArray, jint, jintArray, jlong, jlongArray, jstring};
@@ -193,10 +197,9 @@ pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_evalTree<'
     if field < 0 || field as usize >= tree.root_count() || points.len() % 3 != 0 {
         return std::ptr::null_mut();
     }
-    let values: Vec<f64> = points
-        .chunks_exact(3)
-        .filter_map(|p| tree.compute_root(field as usize, p[0], p[1], p[2]))
-        .collect();
+    let Some(values) = tree.compute_root_points(field as usize, &points) else {
+        return std::ptr::null_mut();
+    };
     let Ok(array) = env.new_double_array(values.len() as jint) else {
         return std::ptr::null_mut();
     };

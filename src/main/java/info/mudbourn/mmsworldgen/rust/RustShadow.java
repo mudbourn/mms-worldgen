@@ -1,8 +1,11 @@
 package info.mudbourn.mmsworldgen.rust;
 
 import info.mudbourn.mmsworldgen.MmsWorldgen;
+import it.unimi.dsi.fastutil.shorts.ShortList;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -12,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
@@ -23,6 +27,7 @@ import net.minecraft.world.level.chunk.ProtoChunk;
 import net.minecraft.world.level.levelgen.Beardifier;
 import net.minecraft.world.level.levelgen.DensityFunctions;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.NoiseSettings;
@@ -31,7 +36,7 @@ import net.minecraft.world.level.levelgen.structure.pools.JigsawJunction;
 
 public final class RustShadow {
 
-    private record Stage(long handle, List<BlockState> palette) {
+    record Stage(long handle, List<BlockState> palette) {
     }
 
     private static final class Counts {
@@ -55,6 +60,7 @@ public final class RustShadow {
     private static final AtomicLong MISMATCHED = new AtomicLong();
     private static final AtomicLong BLOCK_MISMATCHES = new AtomicLong();
     private static final AtomicLong COLUMN_MISMATCHES = new AtomicLong();
+    private static final AtomicLong MARK_MISMATCHES = new AtomicLong();
     private static final AtomicLong SKIPPED_BLEND = new AtomicLong();
     private static final AtomicLong SKIPPED_DIMENSION = new AtomicLong();
     private static final AtomicLong SKIPPED_NO_NOISE_CHUNK = new AtomicLong();
@@ -69,7 +75,7 @@ public final class RustShadow {
 
     // Whether chunks of supported dimensions are currently shadowed.
     public static boolean active() {
-        return !STAGES.isEmpty() && !DISABLED.get();
+        return "shadow".equals(MmsWorldgen.config.rust.mode) && !STAGES.isEmpty() && !DISABLED.get();
     }
 
     // Builds the native stage of a dimension whose density tree matched Java.
@@ -79,7 +85,8 @@ public final class RustShadow {
         NoiseGeneratorSettings settings,
         long treeHandle
     ) {
-        if (!"shadow".equals(MmsWorldgen.config.rust.mode)) {
+        String mode = MmsWorldgen.config.rust.mode;
+        if (!"shadow".equals(mode) && !"on".equals(mode)) {
             return;
         }
         try {
@@ -121,7 +128,11 @@ public final class RustShadow {
                 values,
                 flags
             );
-            STAGES.put(dimension, new Stage(handle, List.copyOf(palette)));
+            Stage stage = new Stage(handle, List.copyOf(palette));
+            STAGES.put(dimension, stage);
+            if (level.getChunkSource().getGenerator() instanceof NoiseBasedChunkGenerator generator) {
+                RustOn.register(generator, dimension, stage);
+            }
         } catch (RuntimeException | LinkageError e) {
             MmsWorldgen.LOG.warn("Rust shadow could not prepare {}: {}", dimension, e.toString());
         }
@@ -141,6 +152,7 @@ public final class RustShadow {
         if (COMPARED.get() > 0) {
             MmsWorldgen.LOG.info("Final {}", summary());
         }
+        RustOn.release();
         STAGES.values().forEach(stage -> RustNative.freeStage(stage.handle()));
         STAGES.clear();
         SKIPPED_DIMENSIONS.clear();
@@ -218,7 +230,31 @@ public final class RustShadow {
         }
     }
 
-    private static int[] beardifier(NoiseChunk noiseChunk) {
+    // Rust's fluid update marks: a count then (y - minY) * 256 + z * 16 + x after the blocks.
+    static int[] marks(int[] result, int minY, int maxY) {
+        int at = HEIGHTMAP_OFFSET + (maxY - minY + 1) * 256;
+        return Arrays.copyOfRange(result, at + 1, at + 1 + result[at]);
+    }
+
+    private static Set<Integer> javaMarks(ChunkAccess chunk, int minY) {
+        Set<Integer> marks = new HashSet<>();
+        ShortList[] lists = chunk.getPostProcessing();
+        for (int sectionIndex = 0; sectionIndex < lists.length; sectionIndex++) {
+            if (lists[sectionIndex] == null) {
+                continue;
+            }
+            int baseY = SectionPos.sectionToBlockCoord(chunk.getSectionYFromSectionIndex(sectionIndex));
+            for (short packed : lists[sectionIndex]) {
+                int x = packed & 15;
+                int y = baseY + ((packed >> 4) & 15);
+                int z = (packed >> 8) & 15;
+                marks.add((y - minY) * 256 + z * 16 + x);
+            }
+        }
+        return marks;
+    }
+
+    static int[] beardifier(NoiseChunk noiseChunk) {
         DensityFunctions.BeardifierOrMarker function = noiseChunk.beardifier;
         if (!(function instanceof Beardifier beardifier) || beardifier.affectedBox == null) {
             return new int[] {0};
@@ -295,6 +331,27 @@ public final class RustShadow {
             }
         }
 
+        Set<Integer> javaMarks = javaMarks(chunk, minY);
+        Set<Integer> rustMarks = new HashSet<>();
+        for (int mark : marks(result, minY, maxY)) {
+            rustMarks.add(mark);
+        }
+        Set<Integer> markDifference = new HashSet<>(javaMarks);
+        markDifference.addAll(rustMarks);
+        markDifference.removeAll(
+            javaMarks.stream().filter(rustMarks::contains).collect(Collectors.toSet())
+        );
+        long markMismatches = markDifference.size();
+        String firstMark = null;
+        if (markMismatches > 0) {
+            int mark = markDifference.stream().min(Integer::compare).orElse(0);
+            firstMark = (chunk.getPos().getMinBlockX() + (mark & 15))
+                + "," + (minY + mark / 256)
+                + "," + (chunk.getPos().getMinBlockZ() + ((mark >> 4) & 15))
+                + " java=" + javaMarks.contains(mark)
+                + " rust=" + rustMarks.contains(mark);
+        }
+
         Heightmap oceanFloor = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
         Heightmap worldSurface = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
         long columnMismatches = 0;
@@ -319,7 +376,7 @@ public final class RustShadow {
         long compared = COMPARED.incrementAndGet();
         Counts counts = BY_DIMENSION.computeIfAbsent(dimension, ignored -> new Counts());
         counts.compared.incrementAndGet();
-        if (blockMismatches == 0 && columnMismatches == 0) {
+        if (blockMismatches == 0 && columnMismatches == 0 && markMismatches == 0) {
             MATCHED.incrementAndGet();
             counts.matched.incrementAndGet();
         } else {
@@ -327,15 +384,18 @@ public final class RustShadow {
             counts.mismatched.incrementAndGet();
             BLOCK_MISMATCHES.addAndGet(blockMismatches);
             COLUMN_MISMATCHES.addAndGet(columnMismatches);
+            MARK_MISMATCHES.addAndGet(markMismatches);
             if (LOGGED_CHUNKS.incrementAndGet() <= MAX_LOGGED_CHUNKS) {
                 MmsWorldgen.LOG.warn(
-                    "Rust shadow mismatch {} chunk {} blocks={} columns={} first block {} first {}",
+                    "Rust shadow mismatch {} chunk {} blocks={} columns={} marks={} first block {} first {} first mark {}",
                     dimension,
                     chunk.getPos(),
                     blockMismatches,
                     columnMismatches,
+                    markMismatches,
                     firstBlock,
-                    firstColumn
+                    firstColumn,
+                    firstMark
                 );
             }
         }
@@ -382,6 +442,7 @@ public final class RustShadow {
             + " mismatched=" + MISMATCHED.get()
             + " block_mismatches=" + BLOCK_MISMATCHES.get()
             + " column_mismatches=" + COLUMN_MISMATCHES.get()
+            + " mark_mismatches=" + MARK_MISMATCHES.get()
             + " skipped_blend=" + SKIPPED_BLEND.get()
             + " skipped_dimension=" + SKIPPED_DIMENSION.get()
             + " skipped_no_noise_chunk=" + SKIPPED_NO_NOISE_CHUNK.get()
