@@ -6,6 +6,7 @@ accessible class net/minecraft/world/level/levelgen/DensityFunctions$BlendDensit
 accessible class net/minecraft/world/level/levelgen/DensityFunctions$BlendOffset
 accessible class net/minecraft/world/level/levelgen/DensityFunctions$Clamp
 accessible class net/minecraft/world/level/levelgen/DensityFunctions$Constant
+accessible class net/minecraft/world/level/levelgen/DensityFunctions$EndIslandDensityFunction
 accessible class net/minecraft/world/level/levelgen/DensityFunctions$FindTopSurface
 accessible class net/minecraft/world/level/levelgen/DensityFunctions$Mapped
 accessible class net/minecraft/world/level/levelgen/DensityFunctions$Mapped$Type

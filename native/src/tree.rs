@@ -4,6 +4,7 @@ use crate::noise::{BlendedNoise, NormalNoise};
 use crate::random::{
     LegacyRandomSource, PositionalRandomFactory, RandomSource, XoroshiroRandomSource,
 };
+use crate::simplex::SimplexNoise;
 use std::sync::OnceLock;
 
 pub const CONSTANT: i32 = 0;
@@ -30,6 +31,8 @@ pub const BLEND_DENSITY: i32 = 20;
 pub const BEARDIFIER: i32 = 21;
 pub const BLENDED_NOISE: i32 = 22;
 pub const SPLINE: i32 = 23;
+pub const DISTANCE_GRADIENT: i32 = 24;
+pub const END_ISLANDS: i32 = 25;
 
 pub const NODE_INTS: usize = 5;
 pub const NODE_DOUBLES: usize = 2;
@@ -146,6 +149,13 @@ pub enum Node {
     Beardifier,
     BlendedNoise(usize),
     Spline(usize),
+    DistanceGradient {
+        min_distance: i32,
+        max_distance: i32,
+        from_value: f64,
+        to_value: f64,
+    },
+    EndIslands,
 }
 
 enum Spline {
@@ -242,10 +252,48 @@ pub struct Tree {
     nodes: Vec<Node>,
     noises: Vec<NormalNoise>,
     blended: Vec<BlendedNoise>,
+    islands: Option<SimplexNoise>,
     splines: Vec<Spline>,
     roots: Vec<usize>,
     shared: Vec<bool>,
     plans: Vec<OnceLock<Option<CellPlan>>>,
+}
+
+fn clamp_f32(f: f32, low: f32, high: f32) -> f32 {
+    if f < low {
+        low
+    } else {
+        f.min(high)
+    }
+}
+
+fn float_sqrt(f: f32) -> f32 {
+    (f as f64).sqrt() as f32
+}
+
+// Height of the end island field at a coarse position like EndIslandDensityFunction.
+fn end_island_height(noise: &SimplexNoise, i: i32, j: i32) -> f32 {
+    let (k, l) = (i / 2, j / 2);
+    let (m, n) = (i % 2, j % 2);
+    let mut f = clamp_f32(
+        100.0 - float_sqrt(i.wrapping_mul(i).wrapping_add(j.wrapping_mul(j)) as f32) * 8.0,
+        -100.0,
+        80.0,
+    );
+    for o in -12..=12i32 {
+        for p in -12..=12i32 {
+            let q = (k + o) as i64;
+            let r = (l + p) as i64;
+            if q * q + r * r > 4096 && noise.value(q as f64, r as f64) < -0.9f32 as f64 {
+                let g = ((q as f32).abs() * 3439.0 + (r as f32).abs() * 147.0) % 13.0 + 9.0;
+                let h = (m - o * 2) as f32;
+                let s = (n - p * 2) as f32;
+                let t = clamp_f32(100.0 - float_sqrt(h * h + s * s) * g, -100.0, 80.0);
+                f = f.max(t);
+            }
+        }
+    }
+    f
 }
 
 fn lerp_f32(f: f32, g: f32, h: f32) -> f32 {
@@ -663,6 +711,13 @@ impl Tree {
                 BEARDIFIER => Node::Beardifier,
                 BLENDED_NOISE => Node::BlendedNoise(index(n[1], blended.len(), "blended")?),
                 SPLINE => Node::Spline(index(n[1], splines.len(), "spline")?),
+                DISTANCE_GRADIENT => Node::DistanceGradient {
+                    min_distance: n[1],
+                    max_distance: n[2],
+                    from_value: d[0],
+                    to_value: d[1],
+                },
+                END_ISLANDS => Node::EndIslands,
                 other => return Err(format!("unknown opcode {other}")),
             };
             nodes.push(node);
@@ -673,12 +728,19 @@ impl Tree {
             roots.push(index(*r, nodes.len(), "root")?);
         }
 
+        let islands = nodes.contains(&Node::EndIslands).then(|| {
+            let mut random = LegacyRandomSource::new(spec.seed);
+            random.consume_count(17292);
+            SimplexNoise::new(&mut random)
+        });
+
         let shared = shared_nodes(&nodes, &splines, &roots);
         let plans = (0..roots.len()).map(|_| OnceLock::new()).collect();
         Ok(Tree {
             nodes,
             noises,
             blended,
+            islands,
             splines,
             roots,
             shared,
@@ -919,6 +981,27 @@ impl Tree {
             Node::BlendDensity(input) => self.eval_here(input, x, y, z, h),
             Node::BlendedNoise(blended) => self.blended[blended].compute(x, y, z),
             Node::Spline(spline) => self.spline(spline, x, y, z, h) as f64,
+            Node::DistanceGradient {
+                min_distance,
+                max_distance,
+                from_value,
+                to_value,
+            } => {
+                let f = x as f32;
+                let g = z as f32;
+                let distance = float_sqrt(f * f + g * g);
+                mth::clamped_map(
+                    distance as f64,
+                    min_distance as f64,
+                    max_distance as f64,
+                    from_value,
+                    to_value,
+                )
+            }
+            Node::EndIslands => match &self.islands {
+                Some(noise) => (end_island_height(noise, x / 8, z / 8) as f64 - 8.0) / 128.0,
+                None => 0.0,
+            },
         }
     }
 
@@ -1142,6 +1225,40 @@ mod tests {
         let value = eval(spec, a, 12, 0, -9);
         assert!(value.is_finite());
         assert_ne!(value, 0.0);
+    }
+
+    #[test]
+    fn distance_gradient_maps_radius_and_clamps() {
+        let mut spec = Spec::default();
+        let id = node(&mut spec, [DISTANCE_GRADIENT, 10, 20, 0, 0], [1.0, 3.0]);
+        let tree = {
+            spec.roots = vec![id];
+            Tree::build(&spec).unwrap()
+        };
+        assert_eq!(tree.compute(id as usize, 3, 0, 4), 1.0);
+        assert_eq!(tree.compute(id as usize, 15, 99, 0), 2.0);
+        assert_eq!(tree.compute(id as usize, 0, 0, 100), 3.0);
+    }
+
+    #[test]
+    fn end_islands_is_flat_at_the_centre_and_deterministic() {
+        let mut spec = Spec {
+            seed: 42,
+            ..Spec::default()
+        };
+        let id = node(&mut spec, [END_ISLANDS, 0, 0, 0, 0], [0.0, 0.0]);
+        spec.roots = vec![id];
+        let tree = Tree::build(&spec).unwrap();
+        let again = Tree::build(&spec).unwrap();
+        assert_eq!(tree.compute(id as usize, 0, 0, 0), (80.0 - 8.0) / 128.0);
+        for x in (-4000..4000).step_by(517) {
+            let a = tree.compute(id as usize, x, 0, x / 3);
+            assert!((-0.84375..=0.5625).contains(&a));
+            assert_eq!(
+                a.to_bits(),
+                again.compute(id as usize, x, 5, x / 3).to_bits()
+            );
+        }
     }
 
     #[test]

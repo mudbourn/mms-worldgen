@@ -3,6 +3,7 @@ package info.mudbourn.mmsworldgen.rust;
 import info.mudbourn.mmsworldgen.router.RouterDump;
 import it.unimi.dsi.fastutil.doubles.DoubleArrayList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -41,6 +42,10 @@ public final class DensityTranslator {
     private static final int BEARDIFIER = 21;
     private static final int BLENDED_NOISE = 22;
     private static final int SPLINE = 23;
+    private static final int DISTANCE_GRADIENT = 24;
+    private static final int END_ISLANDS = 25;
+    private static final String DISTANCE_GRADIENT_CLASS =
+        "net.bunten.enderscape.registry.EnderscapeDensityFunctionTypes$DistanceFromCenterGradient";
 
     // Flat arrays describing a translated router, in the layout the native side reads.
     public record Translation(
@@ -220,8 +225,41 @@ public final class DensityTranslator {
             case DensityFunctions.BeardifierMarker b -> emit(BEARDIFIER, 0, 0, 0, 0);
             case BlendedNoise b -> emit(BLENDED_NOISE, blendedNoise(b), 0, 0, 0);
             case DensityFunctions.Spline s -> emit(SPLINE, spline(s.spline()), 0, 0, 0);
-            default -> throw new UnsupportedException(function.getClass().getName());
+            case DensityFunctions.EndIslandDensityFunction e -> emit(END_ISLANDS, 0, 0, 0, 0);
+            default -> other(function);
         };
+    }
+
+    private int other(DensityFunction function) throws UnsupportedException {
+        String name = function.getClass().getName();
+        if (name.equals(DISTANCE_GRADIENT_CLASS)) {
+            return distanceGradient(function);
+        }
+        throw new UnsupportedException(name);
+    }
+
+    // Reads the record components of Enderscape's distance from center gradient reflectively.
+    private int distanceGradient(DensityFunction function) throws UnsupportedException {
+        try {
+            Class<?> type = function.getClass();
+            return emit(
+                DISTANCE_GRADIENT,
+                (int) component(type, function, "minDistance"),
+                (int) component(type, function, "maxDistance"),
+                0,
+                0,
+                (double) component(type, function, "fromValue"),
+                (double) component(type, function, "toValue")
+            );
+        } catch (ReflectiveOperationException e) {
+            throw new UnsupportedException(function.getClass().getName() + " unreadable: " + e);
+        }
+    }
+
+    private static Object component(Class<?> type, Object target, String name) throws ReflectiveOperationException {
+        Method accessor = type.getDeclaredMethod(name);
+        accessor.setAccessible(true);
+        return accessor.invoke(target);
     }
 
     private int ap2(DensityFunctions.Ap2 function) throws UnsupportedException {

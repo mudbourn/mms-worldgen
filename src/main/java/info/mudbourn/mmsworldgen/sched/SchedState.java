@@ -22,6 +22,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.Ticket;
 import net.minecraft.server.level.TicketType;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.TicketStorage;
 import net.minecraft.world.level.dimension.DimensionType;
@@ -29,7 +30,13 @@ import net.minecraft.world.level.storage.LevelResource;
 
 public final class SchedState {
     private static final int CANDIDATES_PER_PLAYER = 64;
-    private static final long BEHIND_PENALTY = 1L << 40;
+    private static final double FULL_BIAS_SPEED = 8.0;
+    private static final double REFERENCE_SPEED = 8.0;
+    private static final double MIN_COS = 0.1;
+    private static final int MAX_REACH_CHUNKS = 48;
+    private static final int PREFETCH_INTERVAL_TICKS = 4;
+    private static final int PREFETCH_ISSUES_PER_PASS = 32;
+    private static final long PREFETCH_REFRESH_TICKS = 400;
     private static final long STALE_NO_HOLDER_TICKS = 100;
     private static final long STALE_GENERATING_TICKS = 1200;
 
@@ -41,12 +48,15 @@ public final class SchedState {
     private final LongOpenHashSet pending = new LongOpenHashSet();
     private final LongOpenHashSet ticketed = new LongOpenHashSet();
     private final Long2ObjectOpenHashMap<Generation> generating = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<UUID> prefetchOwners = new Long2ObjectOpenHashMap<>();
     private final Map<UUID, PlayerBudget> budgets = new LinkedHashMap<>();
     private volatile Thread serverThread;
     private RegionIndex regions;
     private long lastNanos;
     private long tick;
     private int rotation;
+    private double generateRate;
+    private int concurrentGenerates;
 
     SchedState(DistanceManager manager) {
         this.manager = manager;
@@ -83,7 +93,8 @@ public final class SchedState {
         WorldgenConfig.Scheduling config = MmsWorldgen.config.scheduling;
         serverThread = Thread.currentThread();
         long now = System.nanoTime();
-        double seconds = lastNanos == 0 ? 0 : Math.min(1.0, (now - lastNanos) / 1.0e9);
+        double elapsed = lastNanos == 0 ? 0 : (now - lastNanos) / 1.0e9;
+        double seconds = Math.min(1.0, elapsed);
         lastNanos = now;
         tick++;
 
@@ -93,21 +104,24 @@ public final class SchedState {
                 players.add(player);
             }
         }
-        updateBudgets(players, config, seconds);
+        scaleCaps(level.getServer().getPlayerCount(), config);
+        updateBudgets(players, config, seconds, elapsed);
         reapGenerating(level);
-        if (pending.isEmpty()) {
-            return;
-        }
-
-        List<List<Candidate>> lists = rank(players, config);
         if (regions == null) {
             regions = new RegionIndex(
                 DimensionType.getStorageFolder(level.dimension(), level.getServer().getWorldPath(LevelResource.ROOT))
                     .resolve("region")
             );
         }
-        issue(players, lists, config);
-        rotation++;
+        if (!pending.isEmpty()) {
+            issue(players, rank(players, config), config);
+            rotation++;
+        }
+        if (tick % PREFETCH_INTERVAL_TICKS == 0) {
+            for (ServerPlayer player : players) {
+                prefetch(player, budgets.get(player.getUUID()), config);
+            }
+        }
     }
 
     // Describes each tracked player's budget for the status command.
@@ -117,47 +131,76 @@ public final class SchedState {
         for (PlayerBudget budget : budgets.values()) {
             lines.add(
                 String.format(
-                    "%s: generate tokens %.1f/%d, load tokens %.1f/%d, queued %d, generating %d/%d",
+                    "%s: speed %.1f b/s, generate tokens %.1f/%d, load tokens %.1f/%d, queued %d, generating %d/%d,"
+                        + " prefetch %d held, %d issued",
                     budget.name,
+                    budget.speed(),
                     budget.generateTokens,
-                    config.playerMaxGenerateRate,
+                    (int) generateRate,
                     budget.loadTokens,
                     config.playerMaxLoadRate,
                     budget.queued,
                     budget.generating,
-                    config.playerMaxConcurrentGenerates
+                    concurrentGenerates,
+                    budget.prefetched.size(),
+                    budget.prefetchIssued
                 )
             );
         }
         return lines;
     }
 
-    private void updateBudgets(List<ServerPlayer> players, WorldgenConfig.Scheduling config, double seconds) {
+    private void updateBudgets(List<ServerPlayer> players, WorldgenConfig.Scheduling config, double seconds, double elapsed) {
         Set<UUID> present = new HashSet<>();
         for (ServerPlayer player : players) {
             present.add(player.getUUID());
             PlayerBudget budget = budgets.computeIfAbsent(
                 player.getUUID(),
-                id -> new PlayerBudget(config.playerMaxGenerateRate, config.playerMaxLoadRate)
+                id -> new PlayerBudget(
+                    generateRate,
+                    config.playerMaxLoadRate,
+                    prefetchCap(config),
+                    prefetchLoadCap(config)
+                )
             );
             budget.name = player.getGameProfile().name();
             budget.generateTokens = Math.min(
-                config.playerMaxGenerateRate,
-                budget.generateTokens + config.playerMaxGenerateRate * seconds
+                generateRate,
+                budget.generateTokens + generateRate * seconds
             );
             budget.loadTokens = Math.min(
                 config.playerMaxLoadRate,
                 budget.loadTokens + config.playerMaxLoadRate * seconds
             );
-            budget.track(player.getX(), player.getZ());
+            budget.prefetchTokens = Math.min(
+                prefetchCap(config),
+                budget.prefetchTokens + generateRate * config.prefetchShare * seconds
+            );
+            budget.prefetchLoadTokens = Math.min(
+                prefetchLoadCap(config),
+                budget.prefetchLoadTokens + config.playerMaxLoadRate * config.prefetchShare * seconds
+            );
+            if (budget.track(player.getX(), player.getZ(), elapsed)) {
+                releaseAll(budget);
+            }
             budget.queued = 0;
             budget.generating = 0;
+            budget.prefetchGenerating = 0;
         }
-        budgets.keySet().removeIf(id -> !present.contains(id));
+        budgets.entrySet().removeIf(entry -> {
+            if (present.contains(entry.getKey())) {
+                return false;
+            }
+            releaseAll(entry.getValue());
+            return true;
+        });
         for (Generation generation : generating.values()) {
             PlayerBudget budget = budgets.get(generation.owner);
             if (budget != null) {
                 budget.generating++;
+                if (generation.prefetch) {
+                    budget.prefetchGenerating++;
+                }
             }
         }
     }
@@ -174,6 +217,9 @@ public final class SchedState {
                 PlayerBudget budget = budgets.get(entry.getValue().owner);
                 if (budget != null) {
                     budget.generating--;
+                    if (entry.getValue().prefetch) {
+                        budget.prefetchGenerating--;
+                    }
                 }
                 iterator.remove();
             }
@@ -183,7 +229,7 @@ public final class SchedState {
     private List<List<Candidate>> rank(List<ServerPlayer> players, WorldgenConfig.Scheduling config) {
         List<PriorityQueue<Candidate>> heaps = new ArrayList<>();
         for (int i = 0; i < players.size(); i++) {
-            heaps.add(new PriorityQueue<>(Comparator.comparingLong((Candidate c) -> c.key).reversed()));
+            heaps.add(new PriorityQueue<>(Comparator.comparingDouble((Candidate c) -> c.key).reversed()));
         }
         if (players.isEmpty()) {
             return List.of();
@@ -194,7 +240,7 @@ public final class SchedState {
             int owner = nearestPlayer(players, chunk);
             PlayerBudget budget = budgets.get(players.get(owner).getUUID());
             budget.queued++;
-            long key = key(players.get(owner), budget, chunk, config.headingBias);
+            double key = score(players.get(owner), budget, chunk, config.headingBias);
             PriorityQueue<Candidate> heap = heaps.get(owner);
             if (heap.size() < CANDIDATES_PER_PLAYER) {
                 heap.add(new Candidate(chunk, key));
@@ -206,7 +252,7 @@ public final class SchedState {
         List<List<Candidate>> lists = new ArrayList<>();
         for (PriorityQueue<Candidate> heap : heaps) {
             List<Candidate> sorted = new ArrayList<>(heap);
-            sorted.sort(Comparator.comparingLong(c -> c.key));
+            sorted.sort(Comparator.comparingDouble(c -> c.key));
             lists.add(sorted);
         }
         return lists;
@@ -236,19 +282,26 @@ public final class SchedState {
     }
 
     private boolean tryIssue(long chunk, UUID owner, PlayerBudget budget, WorldgenConfig.Scheduling config) {
+        Generation running = generating.get(chunk);
         boolean onDisk = regions.contains(ChunkPos.getX(chunk), ChunkPos.getZ(chunk));
-        if (onDisk) {
+        if (running != null && running.prefetch) {
+            generating.put(chunk, new Generation(running.owner, running.startedTick, false));
+            PlayerBudget starter = budgets.get(running.owner);
+            if (starter != null) {
+                starter.prefetchGenerating--;
+            }
+        } else if (onDisk) {
             if (budget.loadTokens < 1) {
                 return false;
             }
             budget.loadTokens -= 1;
         } else {
-            if (budget.generateTokens < 1 || budget.generating >= config.playerMaxConcurrentGenerates) {
+            if (budget.generateTokens < 1 || budget.generating >= concurrentGenerates) {
                 return false;
             }
             budget.generateTokens -= 1;
             budget.generating++;
-            generating.put(chunk, new Generation(owner, tick));
+            generating.put(chunk, new Generation(owner, tick, false));
         }
         TicketStorage storage = ((SchedDistanceManagerAccessor) manager).mmswg$ticketStorage();
         storage.addTicket(chunk, ticket);
@@ -274,20 +327,191 @@ public final class SchedState {
         return best;
     }
 
-    private static long key(ServerPlayer player, PlayerBudget budget, long chunk, boolean headingBias) {
-        ChunkPos at = player.chunkPosition();
-        long dx = ChunkPos.getX(chunk) - at.x;
-        long dz = ChunkPos.getZ(chunk) - at.z;
-        long key = dx * dx + dz * dz;
-        if (headingBias && budget.moving() && dx * budget.velocityX + dz * budget.velocityZ < 0) {
-            key += BEHIND_PENALTY;
+    // Scores a chunk by estimated seconds until the player reaches it, lower first.
+    private static double score(ServerPlayer player, PlayerBudget budget, long chunk, boolean headingBias) {
+        double dx = ChunkPos.getX(chunk) * 16 + 8 - player.getX();
+        double dz = ChunkPos.getZ(chunk) * 16 + 8 - player.getZ();
+        double distance = Math.sqrt(dx * dx + dz * dz);
+        double speed = budget.speed();
+        double penalty = 1;
+        if (headingBias && distance > 0 && budget.moving()) {
+            double cos = (dx * budget.velocityX + dz * budget.velocityZ) / (distance * speed);
+            double weight = Math.min(1.0, speed / FULL_BIAS_SPEED);
+            penalty = 1 + weight * (1 / Math.max(cos, MIN_COS) - 1);
         }
-        return key;
+        return distance * penalty / Math.max(speed, REFERENCE_SPEED);
     }
 
-    private record Candidate(long chunk, long key) {
+    // Sets this tick's generate caps from the online player count.
+    private void scaleCaps(int online, WorldgenConfig.Scheduling config) {
+        if (online > config.capFullPlayers) {
+            double share = (double) config.capFullPlayers / online;
+            generateRate = config.playerMaxGenerateRate * share;
+            concurrentGenerates = Math.max(
+                config.minConcurrentGenerates,
+                (int) (config.playerMaxConcurrentGenerates * share)
+            );
+            return;
+        }
+        double t = Math.max(0, online - config.capStartPlayers)
+            / (double) Math.max(1, config.capFullPlayers - config.capStartPlayers);
+        generateRate = lerp(config.uncappedGenerateRate, config.playerMaxGenerateRate, t);
+        concurrentGenerates = Math.max(
+            config.minConcurrentGenerates,
+            (int) Math.round(lerp(config.uncappedConcurrentGenerates, config.playerMaxConcurrentGenerates, t))
+        );
     }
 
-    private record Generation(UUID owner, long startedTick) {
+    private static double lerp(double from, double to, double t) {
+        return from + (to - from) * t;
+    }
+
+    private double prefetchCap(WorldgenConfig.Scheduling config) {
+        return Math.max(1.0, generateRate * config.prefetchShare);
+    }
+
+    private static double prefetchLoadCap(WorldgenConfig.Scheduling config) {
+        return Math.max(1.0, config.playerMaxLoadRate * config.prefetchShare);
+    }
+
+    private void prefetch(ServerPlayer player, PlayerBudget budget, WorldgenConfig.Scheduling config) {
+        boolean enabled = config.lookaheadSeconds > 0 && config.maxPrefetchChunks > 0 && config.prefetchShare > 0;
+        if (!enabled || !budget.moving()) {
+            releaseAll(budget);
+            return;
+        }
+        double speed = budget.speed();
+        double ux = budget.velocityX / speed;
+        double uz = budget.velocityZ / speed;
+        double reach = Math.min(config.lookaheadSeconds * speed, MAX_REACH_CHUNKS * 16.0);
+        double cosCone = Math.cos(Math.toRadians(config.prefetchConeDegrees));
+        int minX = Mth.floor((player.getX() - reach - 8) / 16.0);
+        int maxX = Mth.ceil((player.getX() + reach - 8) / 16.0);
+        int minZ = Mth.floor((player.getZ() - reach - 8) / 16.0);
+        int maxZ = Mth.ceil((player.getZ() + reach - 8) / 16.0);
+        if (cosCone > 0.02) {
+            double side = reach * Math.sqrt(1 - cosCone * cosCone) / cosCone;
+            double endX = player.getX() + ux * reach;
+            double endZ = player.getZ() + uz * reach;
+            double leftX = endX - uz * side;
+            double leftZ = endZ + ux * side;
+            double rightX = endX + uz * side;
+            double rightZ = endZ - ux * side;
+            minX = Mth.ceil((Math.min(player.getX(), Math.min(leftX, rightX)) - 8) / 16.0);
+            maxX = Mth.floor((Math.max(player.getX(), Math.max(leftX, rightX)) - 8) / 16.0);
+            minZ = Mth.ceil((Math.min(player.getZ(), Math.min(leftZ, rightZ)) - 8) / 16.0);
+            maxZ = Mth.floor((Math.max(player.getZ(), Math.max(leftZ, rightZ)) - 8) / 16.0);
+        }
+        UUID self = player.getUUID();
+
+        PriorityQueue<Candidate> heap = new PriorityQueue<>(
+            Comparator.comparingDouble((Candidate c) -> c.key).reversed()
+        );
+        LongOpenHashSet keep = new LongOpenHashSet();
+        for (int cx = minX; cx <= maxX; cx++) {
+            for (int cz = minZ; cz <= maxZ; cz++) {
+                double dx = cx * 16 + 8 - player.getX();
+                double dz = cz * 16 + 8 - player.getZ();
+                double along = dx * ux + dz * uz;
+                if (along <= 0 || along > reach || along < Math.sqrt(dx * dx + dz * dz) * cosCone) {
+                    continue;
+                }
+                long chunk = ChunkPos.asLong(cx, cz);
+                UUID holder = prefetchOwners.get(chunk);
+                if (ticketed.contains(chunk) || holder != null && !holder.equals(self)) {
+                    continue;
+                }
+                if (pending.contains(chunk)) {
+                    keep.add(chunk);
+                    continue;
+                }
+                if (heap.size() < config.maxPrefetchChunks) {
+                    heap.add(new Candidate(chunk, along));
+                } else if (along < heap.peek().key) {
+                    heap.poll();
+                    heap.add(new Candidate(chunk, along));
+                }
+            }
+        }
+
+        List<Candidate> wanted = new ArrayList<>(heap);
+        wanted.sort(Comparator.comparingDouble(c -> c.key));
+        for (Candidate candidate : wanted) {
+            keep.add(candidate.chunk);
+        }
+        var iterator = budget.prefetched.long2ObjectEntrySet().fastIterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            if (!keep.contains(entry.getLongKey())) {
+                releaseTicket(entry.getLongKey(), entry.getValue());
+                iterator.remove();
+            } else if (tick - entry.getValue().tick() > PREFETCH_REFRESH_TICKS) {
+                ((SchedDistanceManagerAccessor) manager).mmswg$ticketStorage()
+                    .addTicket(entry.getLongKey(), entry.getValue().ticket());
+                entry.setValue(new PlayerBudget.Prefetch(entry.getValue().ticket(), tick));
+            }
+        }
+
+        int issued = 0;
+        for (Candidate candidate : wanted) {
+            if (issued >= PREFETCH_ISSUES_PER_PASS) {
+                break;
+            }
+            if (!budget.prefetched.containsKey(candidate.chunk)
+                && tryPrefetch(candidate.chunk, player.getUUID(), budget, config)) {
+                issued++;
+            }
+        }
+    }
+
+    private boolean tryPrefetch(long chunk, UUID owner, PlayerBudget budget, WorldgenConfig.Scheduling config) {
+        boolean onDisk = regions.contains(ChunkPos.getX(chunk), ChunkPos.getZ(chunk));
+        int cap = Math.max(1, (int) (concurrentGenerates * config.prefetchShare));
+        if (onDisk) {
+            if (budget.loadTokens < 1 || budget.prefetchLoadTokens < 1) {
+                return false;
+            }
+        } else if (budget.generateTokens < 1
+            || budget.prefetchTokens < 1
+            || budget.generating >= concurrentGenerates
+            || budget.prefetchGenerating >= cap) {
+            return false;
+        }
+        Ticket prefetchTicket = new Ticket(Sched.prefetchType(), ChunkLevel.byStatus(FullChunkStatus.FULL));
+        if (!((SchedDistanceManagerAccessor) manager).mmswg$ticketStorage().addTicket(chunk, prefetchTicket)) {
+            return false;
+        }
+        if (onDisk) {
+            budget.loadTokens -= 1;
+            budget.prefetchLoadTokens -= 1;
+        } else {
+            budget.generateTokens -= 1;
+            budget.prefetchTokens -= 1;
+            budget.generating++;
+            budget.prefetchGenerating++;
+            generating.put(chunk, new Generation(owner, tick, true));
+        }
+        prefetchOwners.put(chunk, owner);
+        budget.prefetched.put(chunk, new PlayerBudget.Prefetch(prefetchTicket, tick));
+        budget.prefetchIssued++;
+        return true;
+    }
+
+    private void releaseAll(PlayerBudget budget) {
+        for (var entry : budget.prefetched.long2ObjectEntrySet()) {
+            releaseTicket(entry.getLongKey(), entry.getValue());
+        }
+        budget.prefetched.clear();
+    }
+
+    private void releaseTicket(long chunk, PlayerBudget.Prefetch prefetch) {
+        prefetchOwners.remove(chunk);
+        ((SchedDistanceManagerAccessor) manager).mmswg$ticketStorage().removeTicket(chunk, prefetch.ticket());
+    }
+
+    private record Candidate(long chunk, double key) {
+    }
+
+    private record Generation(UUID owner, long startedTick, boolean prefetch) {
     }
 }

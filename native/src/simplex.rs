@@ -21,12 +21,12 @@ const GRADIENT: [[i32; 3]; 16] = [
 ];
 
 // SimplexNoise reduced to the two dimensional lookup the biome temperature uses.
-struct SimplexNoise {
+pub struct SimplexNoise {
     p: [i32; 512],
 }
 
 impl SimplexNoise {
-    fn new<R: RandomSource>(random: &mut R) -> SimplexNoise {
+    pub fn new<R: RandomSource>(random: &mut R) -> SimplexNoise {
         for _ in 0..3 {
             random.next_double();
         }
@@ -56,7 +56,7 @@ impl SimplexNoise {
         }
     }
 
-    fn value(&self, d: f64, e: f64) -> f64 {
+    pub fn value(&self, d: f64, e: f64) -> f64 {
         let sqrt3 = 3.0f64.sqrt();
         let f2 = 0.5 * (sqrt3 - 1.0);
         let g2 = (3.0 - sqrt3) / 6.0;

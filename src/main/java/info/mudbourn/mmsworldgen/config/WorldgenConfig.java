@@ -28,9 +28,18 @@ public final class WorldgenConfig {
     public static final class Scheduling {
         public boolean enabled = false;
         public int playerMaxGenerateRate = 40;
-        public int playerMaxConcurrentGenerates = 8;
+        public int playerMaxConcurrentGenerates = 10;
+        public int minConcurrentGenerates = 10;
+        public int uncappedGenerateRate = 1000;
+        public int uncappedConcurrentGenerates = 128;
+        public int capStartPlayers = 15;
+        public int capFullPlayers = 25;
         public int playerMaxLoadRate = 120;
         public boolean headingBias = true;
+        public double lookaheadSeconds = 6;
+        public double prefetchConeDegrees = 35;
+        public int maxPrefetchChunks = 256;
+        public double prefetchShare = 0.5;
 
         private void validate() {
             playerMaxGenerateRate = fix(
@@ -45,7 +54,31 @@ public final class WorldgenConfig {
                 1,
                 1024
             );
+            uncappedGenerateRate = fix(
+                "scheduling.uncapped_generate_rate",
+                uncappedGenerateRate,
+                playerMaxGenerateRate,
+                10000
+            );
+            uncappedConcurrentGenerates = fix(
+                "scheduling.uncapped_concurrent_generates",
+                uncappedConcurrentGenerates,
+                playerMaxConcurrentGenerates,
+                1024
+            );
+            minConcurrentGenerates = fix(
+                "scheduling.min_concurrent_generates",
+                minConcurrentGenerates,
+                1,
+                uncappedConcurrentGenerates
+            );
+            capStartPlayers = fix("scheduling.cap_start_players", capStartPlayers, 0, 1000);
+            capFullPlayers = fix("scheduling.cap_full_players", capFullPlayers, capStartPlayers + 1, 1001);
             playerMaxLoadRate = fix("scheduling.player_max_load_rate", playerMaxLoadRate, 1, 10000);
+            lookaheadSeconds = fix("scheduling.lookahead_seconds", lookaheadSeconds, 0, 60);
+            prefetchConeDegrees = fix("scheduling.prefetch_cone_degrees", prefetchConeDegrees, 5, 90);
+            maxPrefetchChunks = fix("scheduling.max_prefetch_chunks", maxPrefetchChunks, 0, 4096);
+            prefetchShare = fix("scheduling.prefetch_share", prefetchShare, 0, 1);
         }
     }
 
@@ -98,6 +131,14 @@ public final class WorldgenConfig {
 
     private static int fix(String field, int value, int min, int max) {
         int fixed = Math.max(min, Math.min(max, value));
+        if (fixed != value) {
+            MmsWorldgen.LOG.warn("{} = {} is out of range, using {}", field, value, fixed);
+        }
+        return fixed;
+    }
+
+    private static double fix(String field, double value, double min, double max) {
+        double fixed = Double.isNaN(value) ? min : Math.max(min, Math.min(max, value));
         if (fixed != value) {
             MmsWorldgen.LOG.warn("{} = {} is out of range, using {}", field, value, fixed);
         }
