@@ -1,6 +1,5 @@
 package info.mudbourn.mmsworldgen.compat;
 
-import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -45,17 +44,16 @@ public final class BwgBiomeCache {
         }
     }
 
+    // Wraps a source so its lookups go through the cache.
+    public static BiomeManager.NoiseBiomeSource wrap(BiomeManager.NoiseBiomeSource source) {
+        return (x, y, z) -> lookup(source, x, y, z);
+    }
+
     // Resolves a noise biome, memoized per source while a scope is open.
-    public static Holder<Biome> lookup(
-        BiomeManager.NoiseBiomeSource source,
-        int x,
-        int y,
-        int z,
-        Operation<Holder<Biome>> original
-    ) {
+    public static Holder<Biome> lookup(BiomeManager.NoiseBiomeSource source, int x, int y, int z) {
         State state = STATE.get();
         if (state == null || state.depth == 0) {
-            return original.call(source, x, y, z);
+            return source.getNoiseBiome(x, y, z);
         }
         if (state.source != source) {
             state.source = source;
@@ -64,7 +62,7 @@ public final class BwgBiomeCache {
         long key = BlockPos.asLong(x, y, z);
         Holder<Biome> biome = state.biomes.get(key);
         if (biome == null) {
-            biome = original.call(source, x, y, z);
+            biome = source.getNoiseBiome(x, y, z);
             if (state.biomes.size() >= MAX_ENTRIES) {
                 state.biomes.clear();
             }
