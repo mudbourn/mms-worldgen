@@ -138,6 +138,7 @@ pub struct Aquifer {
     status_cache: Vec<Option<FluidStatus>>,
     locations: Vec<Option<[i32; 3]>>,
     order: [[i32; 3]; 12],
+    c2me_fourth: bool,
     near_cell: [i32; 3],
     near_index: [usize; 12],
     near_location: [[i32; 3]; 12],
@@ -184,6 +185,7 @@ impl Aquifer {
             status_cache: vec![None; total],
             locations: vec![None; total],
             order: candidate_order(stage.c2me_candidate_order),
+            c2me_fourth: stage.c2me_candidate_order,
             near_cell: [i32::MIN; 3],
             near_index: [0; 12],
             near_location: [[0; 3]; 12],
@@ -246,6 +248,10 @@ impl Aquifer {
             let ag = location[1] - j;
             let ah = location[2] - k;
             let key = (((af * af + ag * ag + ah * ah) as u32) << 4) | (15 - c as u32);
+            // C2ME keeps a candidate out of fourth place unless it ties or beats the third.
+            if self.c2me_fourth && key > third {
+                continue;
+            }
             fourth = fourth.min(third.max(key));
             third = third.min(second.max(key));
             second = second.min(first.max(key));
