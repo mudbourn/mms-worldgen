@@ -13,6 +13,7 @@ public final class RustNative {
     private static boolean loaded;
     private static String version = "none";
     private static String failure = "not requested";
+    private static String selfTest = "not run";
 
     private RustNative() {
     }
@@ -32,6 +33,10 @@ public final class RustNative {
             version = version();
             loaded = true;
             MmsWorldgen.LOG.info("Rust sidecar loaded {} version {} in mode {}", resource, version, mode);
+            selfTest = RustSelfTest.run();
+            if (selfTest.startsWith("Rust noise self-test passed")) {
+                RustCompare.init();
+            }
         } catch (IOException | RuntimeException | LinkageError e) {
             failure = e.toString();
             MmsWorldgen.LOG.warn("Rust sidecar unavailable, using Java for this session: {}", failure);
@@ -48,6 +53,10 @@ public final class RustNative {
 
     public static String failure() {
         return failure;
+    }
+
+    public static String selfTestResult() {
+        return selfTest;
     }
 
     private static String resourcePath() {
@@ -80,4 +89,53 @@ public final class RustNative {
     }
 
     private static native String version();
+
+    // Returns raw long results of one random source op, or null on bad input.
+    static native long[] randomSequence(int kind, long seed, int op, int arg, int count);
+
+    // Returns noise samples at xyz triples, or null on bad input.
+    static native double[] sampleNoise(int kind, long seed, int firstOctave, double[] params, double[] points);
+
+    // Builds a native density tree from a translated router and returns its handle.
+    static long createTree(long seed, boolean legacy, DensityTranslator.Translation t) {
+        return createTree(
+            seed,
+            legacy,
+            t.nodeInts(),
+            t.nodeDoubles(),
+            t.noiseKeys(),
+            t.noiseOctaves(),
+            t.noiseAmpEnds(),
+            t.noiseAmps(),
+            t.blended(),
+            t.splineInts(),
+            t.splineConsts(),
+            t.pointChildren(),
+            t.pointValues(),
+            t.roots()
+        );
+    }
+
+    private static native long createTree(
+        long seed,
+        boolean legacy,
+        int[] nodeInts,
+        double[] nodeDoubles,
+        String[] noiseKeys,
+        int[] noiseOctaves,
+        int[] noiseAmpEnds,
+        double[] noiseAmps,
+        double[] blended,
+        int[] splineInts,
+        double[] splineConsts,
+        int[] pointChildren,
+        double[] pointValues,
+        int[] roots
+    );
+
+    // Returns one router field at xyz block triples, or null on bad input.
+    static native double[] evalTree(long handle, int field, int[] points);
+
+    // Releases a native density tree.
+    static native void freeTree(long handle);
 }

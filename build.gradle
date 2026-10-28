@@ -23,6 +23,7 @@ dependencies {
 
 // OpenJ9 dev runs without system core dumps
 loom {
+    accessWidenerPath = file('src/main/resources/mms_worldgen.accesswidener')
     runs {
         configureEach {
             vmArg "-Xdump:system:none"

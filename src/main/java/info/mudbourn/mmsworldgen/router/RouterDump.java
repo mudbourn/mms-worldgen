@@ -17,10 +17,10 @@ import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseRouter;
 
 public final class RouterDump {
-    private record Field(String name, Function<NoiseRouter, DensityFunction> getter) {
+    public record Field(String name, Function<NoiseRouter, DensityFunction> getter) {
     }
 
-    private static final List<Field> FIELDS = List.of(
+    public static final List<Field> FIELDS = List.of(
         new Field("barrier", NoiseRouter::barrierNoise),
         new Field("fluid_level_floodedness", NoiseRouter::fluidLevelFloodednessNoise),
         new Field("fluid_level_spread", NoiseRouter::fluidLevelSpreadNoise),

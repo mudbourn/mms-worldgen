@@ -11,6 +11,7 @@
       "info.mudbourn.mmsworldgen.MmsWorldgen"
     ]
   },
+  "accessWidener": "mms_worldgen.accesswidener",
   "mixins": [
     "mms_worldgen.mixins.json"
   ],
