@@ -75,7 +75,7 @@ public final class RustShadow {
 
     // Whether chunks of supported dimensions are currently shadowed.
     public static boolean active() {
-        return "shadow".equals(MmsWorldgen.config.rust.mode) && !STAGES.isEmpty() && !DISABLED.get();
+        return "shadow".equals(MmsWorldgen.config.rust.noiseMode) && !STAGES.isEmpty() && !DISABLED.get();
     }
 
     // Builds the native stage of a dimension whose density tree matched Java.
@@ -85,7 +85,7 @@ public final class RustShadow {
         NoiseGeneratorSettings settings,
         long treeHandle
     ) {
-        String mode = MmsWorldgen.config.rust.mode;
+        String mode = MmsWorldgen.config.rust.noiseMode;
         if (!"shadow".equals(mode) && !"on".equals(mode)) {
             return;
         }

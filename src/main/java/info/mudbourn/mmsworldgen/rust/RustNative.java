@@ -18,10 +18,10 @@ public final class RustNative {
     private RustNative() {
     }
 
-    // Loads the native library when rust.mode is not off.
+    // Loads the native library when either Rust mode is not off.
     public static void init() {
-        String mode = MmsWorldgen.config.rust.mode;
-        if ("off".equals(mode)) {
+        String mode = MmsWorldgen.config.rust.noiseMode + "/" + MmsWorldgen.config.rust.surfaceMode;
+        if (!MmsWorldgen.config.rust.anyOn()) {
             MmsWorldgen.LOG.info("Rust sidecar off");
             return;
         }

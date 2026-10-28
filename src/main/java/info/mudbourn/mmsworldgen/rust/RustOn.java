@@ -41,11 +41,11 @@ public final class RustOn {
 
     // Whether the on mode is configured and the library is usable.
     public static boolean active() {
-        return "on".equals(MmsWorldgen.config.rust.mode) && RustNative.loaded() && !DISABLED.get();
+        return "on".equals(MmsWorldgen.config.rust.noiseMode) && RustNative.loaded() && !DISABLED.get();
     }
 
     static void register(NoiseBasedChunkGenerator generator, String dimension, RustShadow.Stage stage) {
-        if ("on".equals(MmsWorldgen.config.rust.mode)) {
+        if ("on".equals(MmsWorldgen.config.rust.noiseMode)) {
             PLANS.put(generator, new Plan(dimension, stage));
         }
     }

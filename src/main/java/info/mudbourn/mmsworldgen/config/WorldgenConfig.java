@@ -66,13 +66,24 @@ public final class WorldgenConfig {
     }
 
     public static final class Rust {
-        public String mode = "off";
+        public String noiseMode = "off";
+        public String surfaceMode = "off";
 
         private void validate() {
-            if (!"off".equals(mode) && !"shadow".equals(mode) && !"on".equals(mode)) {
-                MmsWorldgen.LOG.warn("rust.mode = {} is not off, shadow or on, using off", mode);
-                mode = "off";
+            noiseMode = checkMode("rust.noise_mode", noiseMode);
+            surfaceMode = checkMode("rust.surface_mode", surfaceMode);
+        }
+
+        private static String checkMode(String key, String mode) {
+            if ("off".equals(mode) || "shadow".equals(mode) || "on".equals(mode)) {
+                return mode;
             }
+            MmsWorldgen.LOG.warn("{} = {} is not off, shadow or on, using off", key, mode);
+            return "off";
+        }
+
+        public boolean anyOn() {
+            return !"off".equals(noiseMode) || !"off".equals(surfaceMode);
         }
     }
 

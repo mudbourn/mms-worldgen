@@ -12,7 +12,7 @@ public final class RustCommand {
     }
 
     private static String summary() {
-        return "on".equals(MmsWorldgen.config.rust.mode) ? RustOn.summary() : RustShadow.summary();
+        return "on".equals(MmsWorldgen.config.rust.noiseMode) ? RustOn.summary() : RustShadow.summary();
     }
 
     private static void sendSurface(CommandSourceStack source) {
@@ -37,7 +37,8 @@ public final class RustCommand {
             String status = RustNative.loaded()
                 ? "loaded, native " + RustNative.nativeVersion()
                 : "not loaded (" + RustNative.failure() + ")";
-            String line = "rust.mode=" + MmsWorldgen.config.rust.mode
+            String line = "rust.noise_mode=" + MmsWorldgen.config.rust.noiseMode
+                + " surface_mode=" + MmsWorldgen.config.rust.surfaceMode
                 + " library " + status
                 + ", " + RustNative.selfTestResult();
             context.getSource().sendSuccess(() -> Component.literal(line), false);

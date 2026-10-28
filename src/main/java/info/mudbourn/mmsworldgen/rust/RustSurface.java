@@ -101,11 +101,11 @@ public final class RustSurface {
     }
 
     private static boolean shadow() {
-        return "shadow".equals(MmsWorldgen.config.rust.mode);
+        return "shadow".equals(MmsWorldgen.config.rust.surfaceMode);
     }
 
     private static boolean on() {
-        return "on".equals(MmsWorldgen.config.rust.mode);
+        return "on".equals(MmsWorldgen.config.rust.surfaceMode);
     }
 
     // Translates a dimension's surface rule and registers it when the startup checks agree with Java.
