@@ -1,33 +1,33 @@
-use crate::mth;
+use crate::mth::{self, clamp, java_max, java_min};
 use crate::noise::{BlendedNoise, NormalNoise};
 use crate::random::{
     LegacyRandomSource, PositionalRandomFactory, RandomSource, XoroshiroRandomSource,
 };
 
-const CONSTANT: i32 = 0;
-const ADD: i32 = 1;
-const MUL: i32 = 2;
-const MIN: i32 = 3;
-const MAX: i32 = 4;
-const MUL_OR_ADD: i32 = 5;
-const MAPPED: i32 = 6;
-const CLAMP: i32 = 7;
-const MARKER: i32 = 8;
-const NOISE: i32 = 9;
-const SHIFT_A: i32 = 10;
-const SHIFT_B: i32 = 11;
-const SHIFT: i32 = 12;
-const SHIFTED_NOISE: i32 = 13;
-const WEIRD_SCALED: i32 = 14;
-const RANGE_CHOICE: i32 = 15;
-const Y_GRADIENT: i32 = 16;
-const FIND_TOP_SURFACE: i32 = 17;
-const BLEND_ALPHA: i32 = 18;
-const BLEND_OFFSET: i32 = 19;
-const BLEND_DENSITY: i32 = 20;
-const BEARDIFIER: i32 = 21;
-const BLENDED_NOISE: i32 = 22;
-const SPLINE: i32 = 23;
+pub const CONSTANT: i32 = 0;
+pub const ADD: i32 = 1;
+pub const MUL: i32 = 2;
+pub const MIN: i32 = 3;
+pub const MAX: i32 = 4;
+pub const MUL_OR_ADD: i32 = 5;
+pub const MAPPED: i32 = 6;
+pub const CLAMP: i32 = 7;
+pub const MARKER: i32 = 8;
+pub const NOISE: i32 = 9;
+pub const SHIFT_A: i32 = 10;
+pub const SHIFT_B: i32 = 11;
+pub const SHIFT: i32 = 12;
+pub const SHIFTED_NOISE: i32 = 13;
+pub const WEIRD_SCALED: i32 = 14;
+pub const RANGE_CHOICE: i32 = 15;
+pub const Y_GRADIENT: i32 = 16;
+pub const FIND_TOP_SURFACE: i32 = 17;
+pub const BLEND_ALPHA: i32 = 18;
+pub const BLEND_OFFSET: i32 = 19;
+pub const BLEND_DENSITY: i32 = 20;
+pub const BEARDIFIER: i32 = 21;
+pub const BLENDED_NOISE: i32 = 22;
+pub const SPLINE: i32 = 23;
 
 pub const NODE_INTS: usize = 5;
 pub const NODE_DOUBLES: usize = 2;
@@ -156,6 +156,44 @@ enum Spline {
     },
 }
 
+// Callbacks that let a chunk evaluator replace marker and beardifier nodes.
+pub trait Hooks {
+    #[allow(clippy::too_many_arguments)]
+    fn marker(
+        &mut self,
+        tree: &Tree,
+        id: usize,
+        input: usize,
+        kind: MarkerKind,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> f64;
+
+    fn beardifier(&mut self, x: i32, y: i32, z: i32) -> f64;
+}
+
+struct Plain;
+
+impl Hooks for Plain {
+    fn marker(
+        &mut self,
+        tree: &Tree,
+        _id: usize,
+        input: usize,
+        _kind: MarkerKind,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> f64 {
+        tree.compute_with(input, x, y, z, self)
+    }
+
+    fn beardifier(&mut self, _x: i32, _y: i32, _z: i32) -> f64 {
+        0.0
+    }
+}
+
 // Evaluable density function tree with noises wired from a world seed.
 pub struct Tree {
     nodes: Vec<Node>,
@@ -163,50 +201,6 @@ pub struct Tree {
     blended: Vec<BlendedNoise>,
     splines: Vec<Spline>,
     roots: Vec<usize>,
-}
-
-fn java_min(a: f64, b: f64) -> f64 {
-    if a.is_nan() {
-        a
-    } else if b.is_nan() {
-        b
-    } else if a == 0.0 && b == 0.0 {
-        if a.is_sign_negative() {
-            a
-        } else {
-            b
-        }
-    } else if a < b {
-        a
-    } else {
-        b
-    }
-}
-
-fn java_max(a: f64, b: f64) -> f64 {
-    if a.is_nan() {
-        a
-    } else if b.is_nan() {
-        b
-    } else if a == 0.0 && b == 0.0 {
-        if a.is_sign_negative() {
-            b
-        } else {
-            a
-        }
-    } else if a > b {
-        a
-    } else {
-        b
-    }
-}
-
-fn clamp(d: f64, e: f64, f: f64) -> f64 {
-    if d < e {
-        e
-    } else {
-        java_min(d, f)
-    }
 }
 
 fn lerp_f32(f: f32, g: f32, h: f32) -> f32 {
@@ -585,34 +579,67 @@ impl Tree {
     }
 
     pub fn compute(&self, id: usize, x: i32, y: i32, z: i32) -> f64 {
+        self.compute_with(id, x, y, z, &mut Plain)
+    }
+
+    // Returns the node id of a router field.
+    pub fn root_node(&self, root: usize) -> usize {
+        self.roots[root]
+    }
+
+    // Lists every marker node as node id, wrapped node id and kind.
+    pub fn markers(&self) -> Vec<(usize, usize, MarkerKind)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(id, node)| match node {
+                Node::Marker { input, kind } => Some((id, *input, *kind)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn compute_with<H: Hooks>(&self, id: usize, x: i32, y: i32, z: i32, h: &mut H) -> f64 {
         match self.nodes[id] {
             Node::Constant(v) => v,
-            Node::Add(a, b) => self.compute(a, x, y, z) + self.compute(b, x, y, z),
+            Node::Add(a, b) => self.compute_with(a, x, y, z, h) + self.compute_with(b, x, y, z, h),
             Node::Mul(a, b) => {
-                let d = self.compute(a, x, y, z);
+                let d = self.compute_with(a, x, y, z, h);
                 if d == 0.0 {
                     0.0
                 } else {
-                    d * self.compute(b, x, y, z)
+                    d * self.compute_with(b, x, y, z, h)
                 }
             }
-            Node::Min(a, b) => java_min(self.compute(a, x, y, z), self.compute(b, x, y, z)),
-            Node::Max(a, b) => java_max(self.compute(a, x, y, z), self.compute(b, x, y, z)),
+            Node::Min(a, b) => java_min(
+                self.compute_with(a, x, y, z, h),
+                self.compute_with(b, x, y, z, h),
+            ),
+            Node::Max(a, b) => java_max(
+                self.compute_with(a, x, y, z, h),
+                self.compute_with(b, x, y, z, h),
+            ),
             Node::MulOrAdd {
                 input,
                 add,
                 argument,
             } => {
-                let d = self.compute(input, x, y, z);
+                let d = self.compute_with(input, x, y, z, h);
                 if add {
                     d + argument
                 } else {
                     d * argument
                 }
             }
-            Node::Mapped { input, kind } => mapped(kind, self.compute(input, x, y, z)),
-            Node::Clamp { input, min, max } => clamp(self.compute(input, x, y, z), min, max),
-            Node::Marker { input, .. } => self.compute(input, x, y, z),
+            Node::Mapped { input, kind } => mapped(kind, self.compute_with(input, x, y, z, h)),
+            Node::Clamp { input, min, max } => {
+                clamp(self.compute_with(input, x, y, z, h), min, max)
+            }
+            Node::Marker { input, kind } => h.marker(self, id, input, kind, x, y, z),
             Node::Noise {
                 noise,
                 xz_scale,
@@ -633,9 +660,9 @@ impl Tree {
                 xz_scale,
                 y_scale,
             } => {
-                let d = x as f64 * xz_scale + self.compute(shift_x, x, y, z);
-                let e = y as f64 * y_scale + self.compute(shift_y, x, y, z);
-                let f = z as f64 * xz_scale + self.compute(shift_z, x, y, z);
+                let d = x as f64 * xz_scale + self.compute_with(shift_x, x, y, z, h);
+                let e = y as f64 * y_scale + self.compute_with(shift_y, x, y, z, h);
+                let f = z as f64 * xz_scale + self.compute_with(shift_z, x, y, z, h);
                 self.noises[noise].get_value(d, e, f)
             }
             Node::WeirdScaled {
@@ -643,7 +670,7 @@ impl Tree {
                 noise,
                 type2,
             } => {
-                let e = rarity(type2, self.compute(input, x, y, z));
+                let e = rarity(type2, self.compute_with(input, x, y, z, h));
                 e * self.noises[noise]
                     .get_value(x as f64 / e, y as f64 / e, z as f64 / e)
                     .abs()
@@ -655,11 +682,11 @@ impl Tree {
                 min_inclusive,
                 max_exclusive,
             } => {
-                let d = self.compute(input, x, y, z);
+                let d = self.compute_with(input, x, y, z, h);
                 if d >= min_inclusive && d < max_exclusive {
-                    self.compute(in_range, x, y, z)
+                    self.compute_with(in_range, x, y, z, h)
                 } else {
-                    self.compute(out_of_range, x, y, z)
+                    self.compute_with(out_of_range, x, y, z, h)
                 }
             }
             Node::YGradient {
@@ -677,14 +704,14 @@ impl Tree {
                 lower_bound,
                 cell_height,
             } => {
-                let i = mth::floor(self.compute(upper_bound, x, y, z) / cell_height as f64)
+                let i = mth::floor(self.compute_with(upper_bound, x, y, z, h) / cell_height as f64)
                     .wrapping_mul(cell_height);
                 if i <= lower_bound {
                     return lower_bound as f64;
                 }
                 let mut j = i;
                 while j >= lower_bound {
-                    if self.compute(density, x, j, z) > 0.0 {
+                    if self.compute_with(density, x, j, z, h) > 0.0 {
                         return j as f64;
                     }
                     j = j.wrapping_sub(cell_height);
@@ -692,10 +719,11 @@ impl Tree {
                 lower_bound as f64
             }
             Node::BlendAlpha => 1.0,
-            Node::BlendOffset | Node::Beardifier => 0.0,
-            Node::BlendDensity(input) => self.compute(input, x, y, z),
+            Node::BlendOffset => 0.0,
+            Node::Beardifier => h.beardifier(x, y, z),
+            Node::BlendDensity(input) => self.compute_with(input, x, y, z, h),
             Node::BlendedNoise(blended) => self.blended[blended].compute(x, y, z),
-            Node::Spline(spline) => self.spline(spline, x, y, z) as f64,
+            Node::Spline(spline) => self.spline(spline, x, y, z, h) as f64,
         }
     }
 
@@ -703,7 +731,7 @@ impl Tree {
         self.noises[noise].get_value(d * 0.25, e * 0.25, f * 0.25) * 4.0
     }
 
-    fn spline(&self, id: usize, x: i32, y: i32, z: i32) -> f32 {
+    fn spline<H: Hooks>(&self, id: usize, x: i32, y: i32, z: i32, hk: &mut H) -> f32 {
         match &self.splines[id] {
             Spline::Constant(v) => *v,
             Spline::Multipoint {
@@ -712,16 +740,16 @@ impl Tree {
                 derivatives,
                 values,
             } => {
-                let f = self.compute(*coordinate, x, y, z) as f32;
+                let f = self.compute_with(*coordinate, x, y, z, hk) as f32;
                 let i = find_interval_start(locations, f);
                 let j = locations.len() - 1;
                 if i < 0 {
-                    let v = self.spline(values[0], x, y, z);
+                    let v = self.spline(values[0], x, y, z, hk);
                     return linear_extend(f, locations, v, derivatives, 0);
                 }
                 let i = i as usize;
                 if i == j {
-                    let v = self.spline(values[j], x, y, z);
+                    let v = self.spline(values[j], x, y, z, hk);
                     return linear_extend(f, locations, v, derivatives, j);
                 }
                 let g = locations[i];
@@ -729,8 +757,8 @@ impl Tree {
                 let k = (f - g) / (h - g);
                 let l = derivatives[i];
                 let m = derivatives[i + 1];
-                let n = self.spline(values[i], x, y, z);
-                let o = self.spline(values[i + 1], x, y, z);
+                let n = self.spline(values[i], x, y, z, hk);
+                let o = self.spline(values[i + 1], x, y, z, hk);
                 let p = l * (h - g) - (o - n);
                 let q = -m * (h - g) + (o - n);
                 lerp_f32(k, n, o) + k * (1.0 - k) * lerp_f32(k, p, q)

@@ -31,7 +31,12 @@ public final class WorldgenConfig {
         public boolean headingBias = true;
 
         private void validate() {
-            playerMaxGenerateRate = fix("scheduling.player_max_generate_rate", playerMaxGenerateRate, 1, 10000);
+            playerMaxGenerateRate = fix(
+                "scheduling.player_max_generate_rate",
+                playerMaxGenerateRate,
+                1,
+                10000
+            );
             playerMaxConcurrentGenerates = fix(
                 "scheduling.player_max_concurrent_generates",
                 playerMaxConcurrentGenerates,

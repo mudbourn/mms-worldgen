@@ -49,6 +49,7 @@ public final class RustCompare {
     }
 
     private static void release() {
+        RustShadow.release();
         synchronized (STATUS) {
             HANDLES.values().forEach(RustNative::freeTree);
             HANDLES.clear();
@@ -74,7 +75,11 @@ public final class RustCompare {
         try {
             translation = DensityTranslator.translate(settings.noiseRouter());
         } catch (DensityTranslator.UnsupportedException e) {
-            record(dimension, "Rust density tree " + dimension + " unsupported: " + e.getMessage() + ", using Java", false);
+            record(
+                dimension,
+                "Rust density tree " + dimension + " unsupported: " + e.getMessage() + ", using Java",
+                false
+            );
             return;
         }
 
@@ -105,12 +110,15 @@ public final class RustCompare {
                 int y = points[i * 3 + 1];
                 int z = points[i * 3 + 2];
                 double java = function.compute(new DensityFunction.SinglePointContext(x, y, z));
-                boolean same = rust != null && Double.doubleToRawLongBits(java) == Double.doubleToRawLongBits(rust[i]);
+                boolean same = rust != null
+                    && Double.doubleToRawLongBits(java) == Double.doubleToRawLongBits(rust[i]);
                 if (same) {
                     fieldMatched++;
                 } else if (mismatches.size() < MAX_REPORTED) {
                     String found = rust == null ? "null" : Double.toString(rust[i]);
-                    mismatches.add(entry.name() + " at " + x + "," + y + "," + z + " java=" + java + " rust=" + found);
+                    mismatches.add(
+                        entry.name() + " at " + x + "," + y + "," + z + " java=" + java + " rust=" + found
+                    );
                 }
             }
             matched += fieldMatched;
@@ -121,6 +129,9 @@ public final class RustCompare {
         String summary = "Rust density tree " + dimension + " matched " + matched + "/" + total
             + " (" + String.join(", ", fields) + ")";
         record(dimension, summary, matched != total);
+        if (matched == total) {
+            RustShadow.prepare(dimension, level, settings, handle);
+        }
         mismatches.forEach(line -> MmsWorldgen.LOG.warn("Rust density mismatch {}: {}", dimension, line));
     }
 

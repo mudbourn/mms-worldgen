@@ -11,7 +11,7 @@ public final class RustCommand {
     private RustCommand() {
     }
 
-    // Builds /mmswg rust with the load state, the density comparison results and compare.
+    // Builds /mmswg rust with the load state, density comparison and shadow counters.
     public static LiteralArgumentBuilder<CommandSourceStack> build() {
         return Commands.literal("rust").then(Commands.literal("compare").executes(context -> {
             if (!RustNative.loaded()) {
@@ -26,11 +26,14 @@ public final class RustCommand {
             String status = RustNative.loaded()
                 ? "loaded, native " + RustNative.nativeVersion()
                 : "not loaded (" + RustNative.failure() + ")";
-            String line = "rust.mode=" + MmsWorldgen.config.rust.mode + " library " + status + ", " + RustNative.selfTestResult();
+            String line = "rust.mode=" + MmsWorldgen.config.rust.mode
+                + " library " + status
+                + ", " + RustNative.selfTestResult();
             context.getSource().sendSuccess(() -> Component.literal(line), false);
             RustCompare.status().values().forEach(
                 dimensionLine -> context.getSource().sendSuccess(() -> Component.literal(dimensionLine), false)
             );
+            context.getSource().sendSuccess(() -> Component.literal(RustShadow.summary()), false);
             return RustNative.loaded() ? 1 : 0;
         });
     }

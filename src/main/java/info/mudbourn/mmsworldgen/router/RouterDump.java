@@ -76,7 +76,10 @@ public final class RouterDump {
 
                 @Override
                 public DensityFunction.NoiseHolder visitNoise(DensityFunction.NoiseHolder noise) {
-                    String key = noise.noiseData().unwrapKey().map(id -> id.identifier().toString()).orElse("inline");
+                    String key = noise.noiseData()
+                        .unwrapKey()
+                        .map(id -> id.identifier().toString())
+                        .orElse("inline");
                     noises.merge(key, 1, Integer::sum);
                     return noise;
                 }

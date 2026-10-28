@@ -94,7 +94,13 @@ public final class RustNative {
     static native long[] randomSequence(int kind, long seed, int op, int arg, int count);
 
     // Returns noise samples at xyz triples, or null on bad input.
-    static native double[] sampleNoise(int kind, long seed, int firstOctave, double[] params, double[] points);
+    static native double[] sampleNoise(
+        int kind,
+        long seed,
+        int firstOctave,
+        double[] params,
+        double[] points
+    );
 
     // Builds a native density tree from a translated router and returns its handle.
     static long createTree(long seed, boolean legacy, DensityTranslator.Translation t) {
@@ -138,4 +144,26 @@ public final class RustNative {
 
     // Releases a native density tree.
     static native void freeTree(long handle);
+
+    // Builds a native NOISE stage over a density tree and returns its handle.
+    static native long createStage(
+        long tree,
+        long seed,
+        boolean legacy,
+        int[] settings,
+        int[] flags
+    );
+
+    // Runs the NOISE stage of one chunk; returns two heightmaps then palette indices.
+    static native int[] fillChunk(
+        long stage,
+        int chunkX,
+        int chunkZ,
+        int chunkMinY,
+        int chunkMaxY,
+        int[] beardifier
+    );
+
+    // Releases a native NOISE stage.
+    static native void freeStage(long stage);
 }

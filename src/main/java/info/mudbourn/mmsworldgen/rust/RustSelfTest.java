@@ -17,7 +17,14 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 
 public final class RustSelfTest {
 
-    private static final long[] SEEDS = {0L, 1L, -1L, 8682522807148012L, 0x7FFFFFFFFFFFFFFFL, 4_611_686_018_427_387_904L};
+    private static final long[] SEEDS = {
+        0L,
+        1L,
+        -1L,
+        8682522807148012L,
+        0x7FFFFFFFFFFFFFFFL,
+        4_611_686_018_427_387_904L
+    };
     private static final double[][] BLENDED = {
         {0.25, 0.125, 80.0, 160.0, 8.0},
         {1.0, 1.0, 2.0, 3.0, 4.0},
@@ -121,7 +128,10 @@ public final class RustSelfTest {
     private static double[] points() {
         Random random = new Random(42L);
         List<double[]> list = new ArrayList<>();
-        double[] fixed = {0.0, -0.0, 0.5, -0.5, 1.0, -1.0, 1.0E-9, 255.999, 256.0, -256.001, 33554432.0, 16777216.0, -16777216.5, 30_000_000.0, -30_000_000.0, 29_999_999.75};
+        double[] fixed = {
+            0.0, -0.0, 0.5, -0.5, 1.0, -1.0, 1.0E-9, 255.999, 256.0, -256.001,
+            33554432.0, 16777216.0, -16777216.5, 30_000_000.0, -30_000_000.0, 29_999_999.75
+        };
         for (double x : fixed) {
             list.add(new double[] {x, 64.0, -x});
             list.add(new double[] {x * 0.37, x, x * 1.3});
@@ -141,7 +151,11 @@ public final class RustSelfTest {
             });
         }
         for (int i = 0; i < 60; i++) {
-            list.add(new double[] {random.nextInt(2001) - 1000, -64 + random.nextInt(385), random.nextInt(2001) - 1000});
+            list.add(new double[] {
+                random.nextInt(2001) - 1000,
+                -64 + random.nextInt(385),
+                random.nextInt(2001) - 1000
+            });
         }
         double[] flat = new double[list.size() * 3];
         for (int i = 0; i < list.size(); i++) {
@@ -154,7 +168,15 @@ public final class RustSelfTest {
         double sample(double x, double y, double z);
     }
 
-    private void compare(String label, int kind, long seed, int firstOctave, double[] params, double[] points, Sampler sampler) {
+    private void compare(
+        String label,
+        int kind,
+        long seed,
+        int firstOctave,
+        double[] params,
+        double[] points,
+        Sampler sampler
+    ) {
         double[] actual = RustNative.sampleNoise(kind, seed, firstOctave, params, points);
         if (actual == null || actual.length != points.length / 3) {
             fail(label);
@@ -173,7 +195,13 @@ public final class RustSelfTest {
     @SuppressWarnings("deprecation")
     private void noiseChecks() {
         double[] points = points();
-        double[][] shapes = {{1.0, 1.0}, {1.0, 0.0, 2.0, 0.5}, {1.5, 0.0, 1.0, 0.0, 0.0, 0.0}, {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0}, {1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0}};
+        double[][] shapes = {
+            {1.0, 1.0},
+            {1.0, 0.0, 2.0, 0.5},
+            {1.5, 0.0, 1.0, 0.0, 0.0, 0.0},
+            {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0},
+            {1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0}
+        };
         int[] octaves = {-7, -7, -10, -7, -9};
         for (long seed : SEEDS) {
             String tag = "seed=" + seed;
@@ -184,7 +212,15 @@ public final class RustSelfTest {
             double[][] scaled = {{0.5, 0.25}, {0.1, -1.0}, {2.0, 100.0}};
             for (double[] s : scaled) {
                 ImprovedNoise n = new ImprovedNoise(new XoroshiroRandomSource(seed));
-                compare("improved-scaled " + tag + " " + s[0] + "," + s[1], 2, seed, 0, s, points, (x, y, z) -> n.noise(x, y, z, s[0], s[1]));
+                compare(
+                    "improved-scaled " + tag + " " + s[0] + "," + s[1],
+                    2,
+                    seed,
+                    0,
+                    s,
+                    points,
+                    (x, y, z) -> n.noise(x, y, z, s[0], s[1])
+                );
             }
 
             for (int i = 0; i < shapes.length; i++) {
@@ -193,13 +229,27 @@ public final class RustSelfTest {
                 String shape = tag + " first=" + first + " amps=" + amps.length;
                 PerlinNoise perlin = PerlinNoise.create(new XoroshiroRandomSource(seed), first, new DoubleArrayList(amps));
                 compare("perlin " + shape, 3, seed, first, amps, points, perlin::getValue);
-                NormalNoise normal = NormalNoise.create(new XoroshiroRandomSource(seed), new NormalNoise.NoiseParameters(first, new DoubleArrayList(amps)));
+                NormalNoise normal = NormalNoise.create(
+                    new XoroshiroRandomSource(seed),
+                    new NormalNoise.NoiseParameters(first, new DoubleArrayList(amps))
+                );
                 compare("normal " + shape, 4, seed, first, amps, points, normal::getValue);
-                PerlinNoise perlinLegacySource = PerlinNoise.create(new LegacyRandomSource(seed), first, new DoubleArrayList(amps));
+                PerlinNoise perlinLegacySource = PerlinNoise.create(
+                    new LegacyRandomSource(seed),
+                    first,
+                    new DoubleArrayList(amps)
+                );
                 compare("perlin-legacy-source " + shape, 8, seed, first, amps, points, perlinLegacySource::getValue);
-                PerlinNoise nether = PerlinNoise.createLegacyForLegacyNetherBiome(new LegacyRandomSource(seed), first, new DoubleArrayList(amps));
+                PerlinNoise nether = PerlinNoise.createLegacyForLegacyNetherBiome(
+                    new LegacyRandomSource(seed),
+                    first,
+                    new DoubleArrayList(amps)
+                );
                 compare("perlin-nether " + shape, 5, seed, first, amps, points, nether::getValue);
-                NormalNoise netherNormal = NormalNoise.createLegacyNetherBiome(new LegacyRandomSource(seed), new NormalNoise.NoiseParameters(first, new DoubleArrayList(amps)));
+                NormalNoise netherNormal = NormalNoise.createLegacyNetherBiome(
+                    new LegacyRandomSource(seed),
+                    new NormalNoise.NoiseParameters(first, new DoubleArrayList(amps))
+                );
                 compare("normal-nether " + shape, 6, seed, first, amps, points, netherNormal::getValue);
             }
 
@@ -208,8 +258,25 @@ public final class RustSelfTest {
             compare("perlin-positive " + tag, 3, seed, 2, positive, points, up::getValue);
 
             for (double[] params : BLENDED) {
-                BlendedNoise blended = new BlendedNoise(new XoroshiroRandomSource(seed), params[0], params[1], params[2], params[3], params[4]);
-                compare("blended " + tag + " xz=" + params[0], 7, seed, 0, params, points, (x, y, z) -> blended.compute(new DensityFunction.SinglePointContext((int) x, (int) y, (int) z)));
+                BlendedNoise blended = new BlendedNoise(
+                    new XoroshiroRandomSource(seed),
+                    params[0],
+                    params[1],
+                    params[2],
+                    params[3],
+                    params[4]
+                );
+                compare(
+                    "blended " + tag + " xz=" + params[0],
+                    7,
+                    seed,
+                    0,
+                    params,
+                    points,
+                    (x, y, z) -> blended.compute(
+                        new DensityFunction.SinglePointContext((int) x, (int) y, (int) z)
+                    )
+                );
             }
         }
     }

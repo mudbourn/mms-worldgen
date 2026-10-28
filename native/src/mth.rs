@@ -1,3 +1,5 @@
+#![allow(clippy::excessive_precision)]
+
 // Floors a double to an int the way Mth.floor does.
 pub fn floor(d: f64) -> i32 {
     let i = d as i32;
@@ -41,6 +43,79 @@ pub fn lerp3(
     n: f64,
 ) -> f64 {
     lerp(f, lerp2(d, e, g, h, i, j), lerp2(d, e, k, l, m, n))
+}
+
+pub fn inverse_lerp(d: f64, e: f64, f: f64) -> f64 {
+    (d - e) / (f - e)
+}
+
+pub fn clamped_map(d: f64, e: f64, f: f64, g: f64, h: f64) -> f64 {
+    clamped_lerp(inverse_lerp(d, e, f), g, h)
+}
+
+pub fn map(d: f64, e: f64, f: f64, g: f64, h: f64) -> f64 {
+    lerp(inverse_lerp(d, e, f), g, h)
+}
+
+// Clamps like Mth.clamp for doubles.
+pub fn clamp(d: f64, e: f64, f: f64) -> f64 {
+    if d < e {
+        e
+    } else {
+        java_min(d, f)
+    }
+}
+
+// Mth.quantize: floors d / i and scales back by i.
+pub fn quantize(d: f64, i: i32) -> i32 {
+    floor(d / i as f64).wrapping_mul(i)
+}
+
+// Mth.fastInvSqrt on doubles.
+pub fn fast_inv_sqrt(d: f64) -> f64 {
+    let e = 0.5 * d;
+    let l = d.to_bits() as i64;
+    let l = 6910469410427058090i64.wrapping_sub(l >> 1);
+    let d = f64::from_bits(l as u64);
+    d * (1.5 - e * d * d)
+}
+
+// Math.min for doubles with Java NaN and signed zero handling.
+pub fn java_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        a
+    } else if b.is_nan() {
+        b
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_negative() {
+            a
+        } else {
+            b
+        }
+    } else if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+// Math.max for doubles with Java NaN and signed zero handling.
+pub fn java_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        a
+    } else if b.is_nan() {
+        b
+    } else if a == 0.0 && b == 0.0 {
+        if a.is_sign_negative() {
+            b
+        } else {
+            a
+        }
+    } else if a > b {
+        a
+    } else {
+        b
+    }
 }
 
 pub fn smoothstep(d: f64) -> f64 {

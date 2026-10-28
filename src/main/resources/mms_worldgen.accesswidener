@@ -28,3 +28,7 @@ accessible field net/minecraft/world/level/levelgen/synth/BlendedNoise yScale D
 accessible field net/minecraft/world/level/levelgen/synth/BlendedNoise xzFactor D
 accessible field net/minecraft/world/level/levelgen/synth/BlendedNoise yFactor D
 accessible field net/minecraft/world/level/levelgen/synth/BlendedNoise smearScaleMultiplier D
+accessible field net/minecraft/world/level/levelgen/NoiseChunk beardifier Lnet/minecraft/world/level/levelgen/DensityFunctions$BeardifierOrMarker;
+accessible field net/minecraft/world/level/levelgen/Beardifier pieces Ljava/util/List;
+accessible field net/minecraft/world/level/levelgen/Beardifier junctions Ljava/util/List;
+accessible field net/minecraft/world/level/levelgen/Beardifier affectedBox Lnet/minecraft/world/level/levelgen/structure/BoundingBox;

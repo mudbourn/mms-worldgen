@@ -160,7 +160,15 @@ public final class DensityTranslator {
             );
             case DensityFunctions.Ap2 a -> ap2(a);
             case DensityFunctions.Mapped m -> emit(MAPPED, visit(m.input()), mappedKind(m.type()), 0, 0);
-            case DensityFunctions.Clamp c -> emit(CLAMP, visit(c.input()), 0, 0, 0, c.minValue(), c.maxValue());
+            case DensityFunctions.Clamp c -> emit(
+                CLAMP,
+                visit(c.input()),
+                0,
+                0,
+                0,
+                c.minValue(),
+                c.maxValue()
+            );
             case DensityFunctions.Noise n -> emit(NOISE, noise(n.noise()), 0, 0, 0, n.xzScale(), n.yScale());
             case DensityFunctions.ShiftA s -> emit(SHIFT_A, noise(s.offsetNoise()), 0, 0, 0);
             case DensityFunctions.ShiftB s -> emit(SHIFT_B, noise(s.offsetNoise()), 0, 0, 0);
@@ -294,10 +302,16 @@ public final class DensityTranslator {
 
     private int spline(CubicSpline<DensityFunctions.Spline.Point, DensityFunctions.Spline.Coordinate> spline)
         throws UnsupportedException {
-        if (spline instanceof CubicSpline.Constant<DensityFunctions.Spline.Point, DensityFunctions.Spline.Coordinate> constant) {
+        if (spline instanceof CubicSpline.Constant<
+            DensityFunctions.Spline.Point,
+            DensityFunctions.Spline.Coordinate
+        > constant) {
             return addSpline(0, 0, 0, 0, constant.value());
         }
-        if (spline instanceof CubicSpline.Multipoint<DensityFunctions.Spline.Point, DensityFunctions.Spline.Coordinate> multipoint) {
+        if (spline instanceof CubicSpline.Multipoint<
+            DensityFunctions.Spline.Point,
+            DensityFunctions.Spline.Coordinate
+        > multipoint) {
             int coordinate = visit(multipoint.coordinate().function().value());
             int count = multipoint.locations().length;
             int[] children = new int[count];

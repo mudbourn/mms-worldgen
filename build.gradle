@@ -61,7 +61,8 @@ def nativeTargets = [
 ]
 
 def nativeDir = file("$projectDir/native")
-def rustSysroot = providers.exec { commandLine 'rustc', '--print', 'sysroot' }.standardOutput.asText.map { it.trim() }
+def rustSysroot = providers.exec { commandLine 'rustc', '--print', 'sysroot' }
+    .standardOutput.asText.map { it.trim() }
 
 def cargoTasks = nativeTargets.collect { target ->
     def name = target.folder.split('-').collect { it.capitalize() }.join('')
@@ -74,7 +75,9 @@ def cargoTasks = nativeTargets.collect { target ->
         onlyIf("Rust std for ${target.triple} is installed") {
             def ready = file("${rustSysroot.get()}/lib/rustlib/${target.triple}").isDirectory()
             if (!ready) {
-                logger.warn("Skipping native ${target.triple}: no Rust std for it, jar ships without this library")
+                logger.warn(
+                    "Skipping native ${target.triple}: no Rust std for it, jar ships without this library"
+                )
             }
             ready
         }

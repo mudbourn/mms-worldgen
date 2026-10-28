@@ -1,16 +1,24 @@
+pub mod aquifer;
+pub mod beard;
 pub mod mth;
 pub mod noise;
+pub mod noisechunk;
 pub mod random;
 pub mod sample;
+pub mod stage;
 pub mod tree;
+pub mod vein;
 
 use jni::objects::{JClass, JDoubleArray, JIntArray, JObjectArray, JString};
-use jni::sys::{jboolean, jdoubleArray, jint, jlong, jlongArray, jstring};
+use jni::sys::{jboolean, jdoubleArray, jint, jintArray, jlong, jlongArray, jstring};
 use jni::JNIEnv;
+use stage::Stage;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use tree::{Spec, Tree};
 
 static TREES: Mutex<Vec<Option<Arc<Tree>>>> = Mutex::new(Vec::new());
+static STAGES: Mutex<Vec<Option<Arc<Stage>>>> = Mutex::new(Vec::new());
 
 fn read_doubles(env: &mut JNIEnv, array: &JDoubleArray) -> Option<Vec<f64>> {
     let len = env.get_array_length(array).ok()? as usize;
@@ -212,6 +220,107 @@ pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_freeTree(
         .checked_sub(1)
         .and_then(|h| usize::try_from(h).ok())
         .and_then(|h| trees.get_mut(h))
+    {
+        *slot = None;
+    }
+}
+
+// Builds a NOISE stage for RustNative.createStage and returns its handle, or throws.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_createStage<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    tree_handle: jlong,
+    seed: jlong,
+    legacy: jboolean,
+    settings: JIntArray<'local>,
+    flags: JIntArray<'local>,
+) -> jlong {
+    let result = match (
+        lookup(tree_handle),
+        read_ints(&mut env, &settings),
+        read_ints(&mut env, &flags),
+    ) {
+        (Some(tree), Some(settings), Some(flags)) => {
+            Stage::new(tree, seed, legacy != 0, &settings, flags)
+        }
+        _ => Err("stage inputs could not be read".to_string()),
+    };
+    match result {
+        Ok(stage) => {
+            let Ok(mut stages) = STAGES.lock() else {
+                return 0;
+            };
+            stages.push(Some(Arc::new(stage)));
+            stages.len() as jlong
+        }
+        Err(message) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", message);
+            0
+        }
+    }
+}
+
+// Runs the NOISE stage of one chunk for RustNative.fillChunk, or throws.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_fillChunk<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    chunk_x: jint,
+    chunk_z: jint,
+    chunk_min_y: jint,
+    chunk_max_y: jint,
+    beardifier: JIntArray<'local>,
+) -> jintArray {
+    let stage = STAGES.lock().ok().and_then(|stages| {
+        let slot = usize::try_from(handle.checked_sub(1)?).ok()?;
+        stages.get(slot)?.clone()
+    });
+    let (Some(stage), Some(beardifier)) = (stage, read_ints(&mut env, &beardifier)) else {
+        let _ = env.throw_new(
+            "java/lang/IllegalArgumentException",
+            "stage inputs could not be read",
+        );
+        return std::ptr::null_mut();
+    };
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        stage.fill(chunk_x, chunk_z, chunk_min_y, chunk_max_y, &beardifier)
+    }));
+    let values = match outcome {
+        Ok(Ok(values)) => values,
+        Ok(Err(message)) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", message);
+            return std::ptr::null_mut();
+        }
+        Err(_) => {
+            let _ = env.throw_new("java/lang/IllegalStateException", "native fill panicked");
+            return std::ptr::null_mut();
+        }
+    };
+    let Ok(array) = env.new_int_array(values.len() as jint) else {
+        return std::ptr::null_mut();
+    };
+    match env.set_int_array_region(&array, 0, &values) {
+        Ok(()) => array.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+// Releases a stage for RustNative.freeStage.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_freeStage(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    let Ok(mut stages) = STAGES.lock() else {
+        return;
+    };
+    if let Some(slot) = handle
+        .checked_sub(1)
+        .and_then(|h| usize::try_from(h).ok())
+        .and_then(|h| stages.get_mut(h))
     {
         *slot = None;
     }
