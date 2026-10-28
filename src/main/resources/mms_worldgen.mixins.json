@@ -3,11 +3,10 @@
   "package": "info.mudbourn.mmsworldgen.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "ChunkGeneratorStructureStateAccessor",
-    "ServerLevelMixin",
-    "StructurePlacementAccessor",
-    "StructureSetAccessor",
-    "StructureSetMixin"
+    "ParityChunkStatusTasksMixin",
+    "SchedDistanceManagerAccessor",
+    "SchedPlayerTicketTrackerAccessor",
+    "SchedPlayerTicketTrackerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

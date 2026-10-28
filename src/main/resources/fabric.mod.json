@@ -3,7 +3,7 @@
   "id": "mms_worldgen",
   "version": "${version}",
   "name": "MMS Worldgen",
-  "description": "Per-dimension structure budget: managed structure sets share one deterministic slot per cell, so each mod gets a fair, tunable share of the world.",
+  "description": "Fair per-player chunk scheduling for faster worldgen on shared servers.",
   "environment": "*",
   "entrypoints": {
     "main": [
