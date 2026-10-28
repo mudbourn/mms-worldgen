@@ -3,6 +3,7 @@ package info.mudbourn.mmsworldgen;
 import info.mudbourn.mmsworldgen.command.WorldgenCommand;
 import info.mudbourn.mmsworldgen.config.WorldgenConfig;
 import info.mudbourn.mmsworldgen.parity.Parity;
+import info.mudbourn.mmsworldgen.rust.RustNative;
 import info.mudbourn.mmsworldgen.sched.Sched;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -21,6 +22,7 @@ public class MmsWorldgen implements ModInitializer {
         );
         Parity.init();
         Sched.init();
+        RustNative.init();
         LOG.info("MMS Worldgen loaded.");
     }
 }

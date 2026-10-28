@@ -41,8 +41,6 @@ java {
 }
 
 processResources {
-    // declare the version as an input so bumping gradle.properties
-    // invalidates the task (expand values are not tracked automatically)
     inputs.property "mod_version", project.mod_version
     filesMatching("fabric.mod.json") {
         expand "version": project.mod_version
@@ -55,11 +53,48 @@ jar {
     }
 }
 
-// Mixin claims every class under a config's `package` and refuses to load
-// anything there as a normal class (IllegalClassLoadError). A plain helper put
-// in a mixin package compiles and packages cleanly and only explodes the first
-// time it is touched at runtime, as a class-load crash in production. Fail the
-// build instead.
+// Native targets as Rust triple, jar folder and library file name
+def nativeTargets = [
+    [triple: 'aarch64-apple-darwin', folder: 'macos-aarch64', file: 'libmms_worldgen_native.dylib'],
+    [triple: 'x86_64-unknown-linux-gnu', folder: 'linux-x86_64', file: 'libmms_worldgen_native.so']
+]
+
+def nativeDir = file("$projectDir/native")
+def rustSysroot = providers.exec { commandLine 'rustc', '--print', 'sysroot' }.standardOutput.asText.map { it.trim() }
+
+def cargoTasks = nativeTargets.collect { target ->
+    def name = target.folder.split('-').collect { it.capitalize() }.join('')
+    tasks.register("cargoBuild${name}", Exec) {
+        workingDir nativeDir
+        commandLine 'cargo', 'build', '--release', '--target', target.triple
+        inputs.dir("$nativeDir/src")
+        inputs.file("$nativeDir/Cargo.toml")
+        outputs.file("$nativeDir/target/${target.triple}/release/${target.file}")
+        onlyIf("Rust std for ${target.triple} is installed") {
+            def ready = file("${rustSysroot.get()}/lib/rustlib/${target.triple}").isDirectory()
+            if (!ready) {
+                logger.warn("Skipping native ${target.triple}: no Rust std for it, jar ships without this library")
+            }
+            ready
+        }
+    }
+}
+
+def packNatives = tasks.register('packNatives', Copy) {
+    dependsOn cargoTasks
+    into layout.buildDirectory.dir('natives')
+    nativeTargets.each { target ->
+        from("$nativeDir/target/${target.triple}/release/${target.file}") {
+            into "natives/${target.folder}"
+        }
+    }
+}
+
+processResources {
+    from(packNatives)
+}
+
+// Fails the build when a plain class sits in a mixin package
 def checkMixinPackages = tasks.register('checkMixinPackages', Exec) {
     dependsOn tasks.named('remapJar')
     doFirst {

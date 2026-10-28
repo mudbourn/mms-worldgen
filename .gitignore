@@ -9,3 +9,4 @@ run/
 *.md
 !README.md
 !docs/*.md
+native/target/

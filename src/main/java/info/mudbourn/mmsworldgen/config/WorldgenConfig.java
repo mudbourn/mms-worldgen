@@ -21,6 +21,7 @@ public final class WorldgenConfig {
 
     public Scheduling scheduling = new Scheduling();
     public Parity parity = new Parity();
+    public Rust rust = new Rust();
 
     public static final class Scheduling {
         public boolean enabled = false;
@@ -53,6 +54,17 @@ public final class WorldgenConfig {
             if (label == null || !label.matches("[A-Za-z0-9_.-]+")) {
                 MmsWorldgen.LOG.warn("parity.label = {} is not a plain name, using default", label);
                 label = "default";
+            }
+        }
+    }
+
+    public static final class Rust {
+        public String mode = "off";
+
+        private void validate() {
+            if (!"off".equals(mode) && !"shadow".equals(mode) && !"on".equals(mode)) {
+                MmsWorldgen.LOG.warn("rust.mode = {} is not off, shadow or on, using off", mode);
+                mode = "off";
             }
         }
     }
@@ -94,8 +106,12 @@ public final class WorldgenConfig {
         if (parity == null) {
             parity = new Parity();
         }
+        if (rust == null) {
+            rust = new Rust();
+        }
         scheduling.validate();
         parity.validate();
+        rust.validate();
     }
 
     private void save() {
