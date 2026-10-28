@@ -7,6 +7,7 @@
     "BwgBasaltBarreraExtensionMixin",
     "BwgBiomeManagerMixin",
     "BwgCragGardenExtensionMixin",
+    "MovePlayerChunkGuardMixin",
     "ParityChunkGeneratorAccessor",
     "ParityChunkGeneratorMixin",
     "ParityChunkStatusTasksMixin",

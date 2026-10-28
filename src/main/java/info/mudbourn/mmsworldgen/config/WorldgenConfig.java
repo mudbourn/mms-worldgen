@@ -23,6 +23,7 @@ public final class WorldgenConfig {
     public Parity parity = new Parity();
     public Rust rust = new Rust();
     public Compat compat = new Compat();
+    public Movement movement = new Movement();
 
     public static final class Scheduling {
         public boolean enabled = false;
@@ -80,6 +81,10 @@ public final class WorldgenConfig {
         public boolean terrablenderLockfree = true;
     }
 
+    public static final class Movement {
+        public boolean rejectUnreadyChunks = true;
+    }
+
     private static int fix(String field, int value, int min, int max) {
         int fixed = Math.max(min, Math.min(max, value));
         if (fixed != value) {
@@ -122,6 +127,9 @@ public final class WorldgenConfig {
         }
         if (compat == null) {
             compat = new Compat();
+        }
+        if (movement == null) {
+            movement = new Movement();
         }
         scheduling.validate();
         parity.validate();
