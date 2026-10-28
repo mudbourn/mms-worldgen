@@ -164,7 +164,9 @@ public final class Parity {
         }
         int x = chunk.getPos().x;
         int z = chunk.getPos().z;
-        long[] hashes = ParityHash.sections(chunk);
+        long[] hashes = stage == ParityStage.NOISE_HEIGHTMAPS
+            ? ParityHash.heightmaps(chunk)
+            : ParityHash.sections(chunk);
         if (recording) {
             ParityWriter current = writer;
             if (current != null) {
@@ -183,7 +185,7 @@ public final class Parity {
             if (i >= expected.length || i >= hashes.length || expected[i] != hashes[i]) {
                 same = false;
                 MmsWorldgen.LOG.warn(
-                    "Parity mismatch dimension={} chunk=({}, {}) stage={} section={}",
+                    "Parity mismatch dimension={} chunk=({}, {}) stage={} index={}",
                     dimension,
                     x,
                     z,

@@ -26,6 +26,7 @@ public abstract class ParityChunkStatusTasksMixin {
         CallbackInfoReturnable<CompletableFuture<ChunkAccess>> cir
     ) {
         mmswg$hook(context, ParityStage.NOISE, cir);
+        mmswg$hook(context, ParityStage.NOISE_HEIGHTMAPS, cir);
     }
 
     @Inject(method = "generateSurface", at = @At("RETURN"), cancellable = true)

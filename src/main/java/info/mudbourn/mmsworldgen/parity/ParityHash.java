@@ -1,6 +1,7 @@
 package info.mudbourn.mmsworldgen.parity;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -8,11 +9,16 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.levelgen.Heightmap;
 
 public final class ParityHash {
     private static final long OFFSET = 0xcbf29ce484222325L;
     private static final long PRIME = 0x100000001b3L;
     private static final Map<BlockState, Long> STATE_HASHES = new ConcurrentHashMap<>();
+    private static final List<Heightmap.Types> WORLDGEN_HEIGHTMAPS = List.of(
+        Heightmap.Types.OCEAN_FLOOR_WG,
+        Heightmap.Types.WORLD_SURFACE_WG
+    );
 
     private ParityHash() {
     }
@@ -23,6 +29,26 @@ public final class ParityHash {
         long[] hashes = new long[sections.length];
         for (int i = 0; i < sections.length; i++) {
             hashes[i] = section(sections[i]);
+        }
+        return hashes;
+    }
+
+    // Hashes the worldgen heightmaps of a chunk, one entry per type, 0 when missing.
+    public static long[] heightmaps(ChunkAccess chunk) {
+        long[] hashes = new long[WORLDGEN_HEIGHTMAPS.size()];
+        for (int i = 0; i < hashes.length; i++) {
+            Heightmap.Types type = WORLDGEN_HEIGHTMAPS.get(i);
+            if (!chunk.hasPrimedHeightmap(type)) {
+                continue;
+            }
+            Heightmap heightmap = chunk.getOrCreateHeightmapUnprimed(type);
+            long hash = OFFSET;
+            for (int z = 0; z < 16; z++) {
+                for (int x = 0; x < 16; x++) {
+                    hash = mix(hash, heightmap.getFirstAvailable(x, z));
+                }
+            }
+            hashes[i] = hash;
         }
         return hashes;
     }
