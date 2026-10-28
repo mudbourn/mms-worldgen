@@ -4,6 +4,7 @@
   "version": "${version}",
   "name": "MMS Worldgen",
   "description": "Fair per-player chunk scheduling for faster worldgen on shared servers.",
+  "license": "GPL-3.0-only",
   "environment": "*",
   "entrypoints": {
     "main": [
