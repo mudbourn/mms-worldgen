@@ -14,6 +14,7 @@ pub trait RandomSource: Sized {
     fn next_long(&mut self) -> i64;
     fn next_float(&mut self) -> f32;
     fn next_double(&mut self) -> f64;
+    fn next_boolean(&mut self) -> bool;
     fn next_gaussian(&mut self) -> f64;
     fn consume_count(&mut self, count: i32);
     fn fork_positional(&mut self) -> Self::Factory;
@@ -117,6 +118,10 @@ impl RandomSource for LegacyRandomSource {
         let j = self.next(27);
         let l = ((i as i64) << 27) + j as i64;
         l as f64 * DOUBLE_UNIT as f64
+    }
+
+    fn next_boolean(&mut self) -> bool {
+        self.next(1) != 0
     }
 
     fn next_gaussian(&mut self) -> f64 {
@@ -271,6 +276,10 @@ impl RandomSource for XoroshiroRandomSource {
 
     fn next_double(&mut self) -> f64 {
         self.next_bits(53) as f64 * DOUBLE_UNIT as f64
+    }
+
+    fn next_boolean(&mut self) -> bool {
+        self.next_long() & 1 != 0
     }
 
     fn next_gaussian(&mut self) -> f64 {

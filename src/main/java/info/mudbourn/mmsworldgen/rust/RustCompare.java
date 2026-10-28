@@ -49,6 +49,7 @@ public final class RustCompare {
     }
 
     private static void release() {
+        RustSurface.release();
         RustShadow.release();
         synchronized (STATUS) {
             HANDLES.values().forEach(RustNative::freeTree);
@@ -131,6 +132,7 @@ public final class RustCompare {
         record(dimension, summary, matched != total);
         if (matched == total) {
             RustShadow.prepare(dimension, level, settings, handle);
+            RustSurface.prepare(dimension, level, generator, settings, handle);
         }
         mismatches.forEach(line -> MmsWorldgen.LOG.warn("Rust density mismatch {}: {}", dimension, line));
     }

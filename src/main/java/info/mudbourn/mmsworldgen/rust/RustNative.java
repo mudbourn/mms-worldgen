@@ -166,4 +166,82 @@ public final class RustNative {
 
     // Releases a native NOISE stage.
     static native void freeStage(long stage);
+
+    // Builds a native surface system over a density tree and returns its handle.
+    static long createSurface(
+        long tree,
+        long seed,
+        boolean legacy,
+        int seaLevel,
+        SurfaceTranslator.Translation t
+    ) {
+        return createSurface(
+            tree,
+            seed,
+            legacy,
+            seaLevel,
+            t.defaultBlock(),
+            t.ruleInts(),
+            t.condInts(),
+            t.condDoubles(),
+            t.lists(),
+            t.root(),
+            t.noiseKeys(),
+            t.noiseOctaves(),
+            t.noiseAmpEnds(),
+            t.noiseAmps(),
+            t.gradientNames(),
+            t.biomeInts()
+        );
+    }
+
+    private static native long createSurface(
+        long tree,
+        long seed,
+        boolean legacy,
+        int seaLevel,
+        int defaultBlock,
+        int[] ruleInts,
+        int[] condInts,
+        double[] condDoubles,
+        int[] lists,
+        int root,
+        String[] noiseKeys,
+        int[] noiseOctaves,
+        int[] noiseAmpEnds,
+        double[] noiseAmps,
+        String[] gradientNames,
+        int[] biomeInts
+    );
+
+    // Runs the surface step of one chunk; returns two heightmaps, changed blocks and fluid marks.
+    static native int[] buildSurface(
+        long surface,
+        int chunkX,
+        int chunkZ,
+        int minY,
+        int maxY,
+        long biomeSeed,
+        int[] maps,
+        int[] blocks,
+        int[] flags,
+        int[] biomes
+    );
+
+    // Releases a native surface system.
+    static native void freeSurface(long surface);
+
+    // Zooms biomes at xyz block triples over a quart grid, or returns null on bad input.
+    static native int[] surfaceBiomes(
+        long seed,
+        int chunkX,
+        int chunkZ,
+        int minY,
+        int maxY,
+        int[] grid,
+        int[] points
+    );
+
+    // Answers coldEnoughToSnow for biome, x, y, z quadruples, or returns null on bad input.
+    static native int[] surfaceCold(long surface, int[] queries);
 }

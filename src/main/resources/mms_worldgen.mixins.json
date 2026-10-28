@@ -2,16 +2,22 @@
   "required": true,
   "package": "info.mudbourn.mmsworldgen.mixin",
   "compatibilityLevel": "JAVA_21",
+  "plugin": "info.mudbourn.mmsworldgen.compat.CompatMixinPlugin",
   "mixins": [
+    "BwgBasaltBarreraExtensionMixin",
+    "BwgBiomeManagerMixin",
+    "BwgCragGardenExtensionMixin",
     "ParityChunkGeneratorAccessor",
     "ParityChunkGeneratorMixin",
     "ParityChunkStatusTasksMixin",
     "RustChunkStatusTasksMixin",
     "RustFillMixin",
     "RustFillTimingMixin",
+    "RustSurfaceMixin",
     "SchedDistanceManagerAccessor",
     "SchedPlayerTicketTrackerAccessor",
-    "SchedPlayerTicketTrackerMixin"
+    "SchedPlayerTicketTrackerMixin",
+    "TerraBlenderAreaMixin"
   ],
   "injectors": {
     "defaultRequire": 1

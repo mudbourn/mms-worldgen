@@ -22,6 +22,7 @@ public final class WorldgenConfig {
     public Scheduling scheduling = new Scheduling();
     public Parity parity = new Parity();
     public Rust rust = new Rust();
+    public Compat compat = new Compat();
 
     public static final class Scheduling {
         public boolean enabled = false;
@@ -74,6 +75,11 @@ public final class WorldgenConfig {
         }
     }
 
+    public static final class Compat {
+        public boolean bwgBiomeCache = true;
+        public boolean terrablenderLockfree = true;
+    }
+
     private static int fix(String field, int value, int min, int max) {
         int fixed = Math.max(min, Math.min(max, value));
         if (fixed != value) {
@@ -113,6 +119,9 @@ public final class WorldgenConfig {
         }
         if (rust == null) {
             rust = new Rust();
+        }
+        if (compat == null) {
+            compat = new Compat();
         }
         scheduling.validate();
         parity.validate();

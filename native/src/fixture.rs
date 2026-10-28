@@ -1,4 +1,5 @@
 use crate::stage::Stage;
+use crate::surface_fixture;
 use crate::tree::{Spec, Tree};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -63,7 +64,7 @@ pub fn stage(seed: i64, variant: usize) -> Stage {
 }
 
 // Chunk positions spread over land, ocean and mountains, the first few near the origin.
-fn chunks(seed: i64) -> Vec<(i32, i32)> {
+pub fn chunks(seed: i64) -> Vec<(i32, i32)> {
     let mut state = seed as u64 ^ 0xabcdef;
     let mut list = vec![(0, 0), (1, 0), (-1, -1)];
     while list.len() < CHUNK_COUNT {
@@ -110,7 +111,7 @@ fn beard_ints(chunk_x: i32, chunk_z: i32) -> Vec<i32> {
     ]
 }
 
-fn hash(values: &[i32]) -> u64 {
+pub fn hash(values: &[i32]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
     for v in values {
         h ^= *v as u32 as u64;
@@ -191,6 +192,7 @@ fn all_hashes() -> Vec<(String, u64)> {
     for seed in SEEDS {
         all.extend(tree_hashes(seed));
         all.extend(fill_hashes(seed));
+        all.extend(surface_fixture::hashes(seed));
     }
     all
 }

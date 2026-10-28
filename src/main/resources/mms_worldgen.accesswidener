@@ -32,3 +32,23 @@ accessible field net/minecraft/world/level/levelgen/NoiseChunk beardifier Lnet/m
 accessible field net/minecraft/world/level/levelgen/Beardifier pieces Ljava/util/List;
 accessible field net/minecraft/world/level/levelgen/Beardifier junctions Ljava/util/List;
 accessible field net/minecraft/world/level/levelgen/Beardifier affectedBox Lnet/minecraft/world/level/levelgen/structure/BoundingBox;
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$AbovePreliminarySurface
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$Bandlands
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$BiomeConditionSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$BlockRuleSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$Hole
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$NoiseThresholdConditionSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$NotConditionSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$SequenceRuleSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$Steep
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$StoneDepthCheck
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$Temperature
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$TestRuleSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$VerticalGradientConditionSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$WaterConditionSource
+accessible class net/minecraft/world/level/levelgen/SurfaceRules$YConditionSource
+accessible field net/minecraft/world/level/levelgen/SurfaceRules$BiomeConditionSource biomes Ljava/util/List;
+accessible field net/minecraft/world/level/levelgen/SurfaceSystem noiseRandom Lnet/minecraft/world/level/levelgen/PositionalRandomFactory;
+accessible class net/minecraft/world/level/biome/Biome$ClimateSettings
+accessible field net/minecraft/world/level/biome/Biome climateSettings Lnet/minecraft/world/level/biome/Biome$ClimateSettings;
+accessible field net/minecraft/world/level/biome/BiomeManager biomeZoomSeed J

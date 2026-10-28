@@ -15,6 +15,13 @@ public final class RustCommand {
         return "on".equals(MmsWorldgen.config.rust.mode) ? RustOn.summary() : RustShadow.summary();
     }
 
+    private static void sendSurface(CommandSourceStack source) {
+        RustSurface.checks().values().forEach(
+            line -> source.sendSuccess(() -> Component.literal(line), false)
+        );
+        source.sendSuccess(() -> Component.literal(RustSurface.summary()), false);
+    }
+
     // Builds /mmswg rust with the load state, density comparison and shadow counters.
     public static LiteralArgumentBuilder<CommandSourceStack> build() {
         return Commands.literal("rust").then(Commands.literal("compare").executes(context -> {
@@ -38,6 +45,7 @@ public final class RustCommand {
                 dimensionLine -> context.getSource().sendSuccess(() -> Component.literal(dimensionLine), false)
             );
             context.getSource().sendSuccess(() -> Component.literal(summary()), false);
+            sendSurface(context.getSource());
             return RustNative.loaded() ? 1 : 0;
         });
     }

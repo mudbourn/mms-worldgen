@@ -21,12 +21,14 @@ dependencies {
     modImplementation "net.fabricmc.fabric-api:fabric-api:0.141.4+1.21.11"
 }
 
-// OpenJ9 dev runs without system core dumps
 loom {
     accessWidenerPath = file('src/main/resources/mms_worldgen.accesswidener')
     runs {
         configureEach {
-            vmArg "-Xdump:system:none"
+            // OpenJ9 dev runs without system core dumps
+            if (System.getProperty("java.vm.name").contains("OpenJ9")) {
+                vmArg "-Xdump:system:none"
+            }
         }
     }
 }

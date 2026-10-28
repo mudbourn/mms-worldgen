@@ -36,6 +36,13 @@ impl Rng {
             Rng::Xoroshiro(random) => random.next_float(),
         }
     }
+
+    pub fn next_double(&mut self) -> f64 {
+        match self {
+            Rng::Legacy(random) => random.next_double(),
+            Rng::Xoroshiro(random) => random.next_double(),
+        }
+    }
 }
 
 pub enum PosFactory {
