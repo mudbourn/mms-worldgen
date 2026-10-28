@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.chunk.ChunkAccess;
 
@@ -32,6 +33,7 @@ public final class Parity {
     private static final Map<Key, long[]> LOADED = new ConcurrentHashMap<>();
     private static volatile ParityWriter writer;
     private static volatile boolean recording;
+    private static volatile Path dir;
 
     private Parity() {
     }
@@ -44,6 +46,7 @@ public final class Parity {
     // Registers server start and stop handling.
     public static void init() {
         ServerLifecycleEvents.SERVER_STARTING.register(server -> start());
+        ServerLifecycleEvents.SERVER_STARTED.register(Parity::featureOrder);
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> stop());
     }
 
@@ -53,7 +56,7 @@ public final class Parity {
 
     private static synchronized void start() {
         String mode = mode();
-        Path dir = FabricLoader.getInstance()
+        dir = FabricLoader.getInstance()
             .getGameDir()
             .resolve("mms_parity")
             .resolve(MmsWorldgen.config.parity.label);
@@ -73,6 +76,16 @@ public final class Parity {
             load(dir);
             recording = false;
             active = true;
+        }
+    }
+
+    private static void featureOrder(MinecraftServer server) {
+        if (!active) {
+            return;
+        }
+        for (ServerLevel level : server.getAllLevels()) {
+            String name = ParityWriter.dimensionName(level.dimension().identifier().toString());
+            ParityFeatureOrder.handle(level, name, dir, recording);
         }
     }
 

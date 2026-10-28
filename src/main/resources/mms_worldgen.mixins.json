@@ -3,6 +3,7 @@
   "package": "info.mudbourn.mmsworldgen.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "ParityChunkGeneratorAccessor",
     "ParityChunkStatusTasksMixin",
     "SchedDistanceManagerAccessor",
     "SchedPlayerTicketTrackerAccessor",
