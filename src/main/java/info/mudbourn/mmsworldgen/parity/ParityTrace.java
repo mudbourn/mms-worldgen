@@ -55,7 +55,7 @@ public final class ParityTrace {
     // Logs the first feature whose entry differs from the recorded trace.
     static void logDivergence(String dimension, int x, int z, long[] expected, long[] actual, int index) {
         int entry = index / ENTRY;
-        MmsWorldgen.LOG.warn(
+        MmsWorldgen.LOG.info(
             "Parity trace divergence dimension={} chunk=({}, {}) entry={} recorded={} current={}",
             dimension,
             x,

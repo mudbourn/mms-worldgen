@@ -30,6 +30,8 @@ public final class Parity {
     static final AtomicLong MISMATCHED = new AtomicLong();
     static final AtomicLong UNRECORDED = new AtomicLong();
     static final AtomicLong RECORDED = new AtomicLong();
+    static final AtomicLong ADVISORY_CHECKED = new AtomicLong();
+    static final AtomicLong ADVISORY_MISMATCHED = new AtomicLong();
 
     private static final Map<Key, long[]> LOADED = new ConcurrentHashMap<>();
     private static volatile ParityWriter writer;
@@ -66,6 +68,8 @@ public final class Parity {
         MISMATCHED.set(0);
         UNRECORDED.set(0);
         RECORDED.set(0);
+        ADVISORY_CHECKED.set(0);
+        ADVISORY_MISMATCHED.set(0);
         LOADED.clear();
         Path region = server.getWorldPath(LevelResource.ROOT).resolve("region");
         if (!"off".equals(mode) && hasFiles(region)) {
@@ -194,8 +198,19 @@ public final class Parity {
             }
             return;
         }
-        CHECKED.incrementAndGet();
         long[] expected = LOADED.get(new Key(dimension, stage, x, z));
+        if (!stage.gated) {
+            ADVISORY_CHECKED.incrementAndGet();
+            int index = firstDifference(expected, hashes);
+            if (index >= 0) {
+                ADVISORY_MISMATCHED.incrementAndGet();
+                if (stage == ParityStage.FEATURE_TRACE && expected != null) {
+                    ParityTrace.logDivergence(dimension, x, z, expected, hashes, index);
+                }
+            }
+            return;
+        }
+        CHECKED.incrementAndGet();
         if (expected == null) {
             UNRECORDED.incrementAndGet();
             return;
@@ -204,10 +219,6 @@ public final class Parity {
         for (int i = 0; i < Math.max(expected.length, hashes.length); i++) {
             if (i >= expected.length || i >= hashes.length || expected[i] != hashes[i]) {
                 same = false;
-                if (stage == ParityStage.FEATURE_TRACE) {
-                    ParityTrace.logDivergence(dimension, x, z, expected, hashes, i);
-                    break;
-                }
                 MmsWorldgen.LOG.warn(
                     "Parity mismatch dimension={} chunk=({}, {}) stage={} index={}",
                     dimension,
@@ -223,5 +234,18 @@ public final class Parity {
         } else {
             MISMATCHED.incrementAndGet();
         }
+    }
+
+    // Index of the first differing hash, -1 when equal, 0 when nothing was recorded.
+    private static int firstDifference(long[] expected, long[] actual) {
+        if (expected == null) {
+            return 0;
+        }
+        for (int i = 0; i < Math.max(expected.length, actual.length); i++) {
+            if (i >= expected.length || i >= actual.length || expected[i] != actual[i]) {
+                return i;
+            }
+        }
+        return -1;
     }
 }

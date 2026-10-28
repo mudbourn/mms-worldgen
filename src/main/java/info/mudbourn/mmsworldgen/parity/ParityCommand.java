@@ -18,7 +18,9 @@ public final class ParityCommand {
                 + " matched=" + Parity.MATCHED.get()
                 + " mismatched=" + Parity.MISMATCHED.get()
                 + " unrecorded=" + Parity.UNRECORDED.get()
-                + " recorded=" + Parity.RECORDED.get();
+                + " recorded=" + Parity.RECORDED.get()
+                + " advisory_checked=" + Parity.ADVISORY_CHECKED.get()
+                + " advisory_mismatched=" + Parity.ADVISORY_MISMATCHED.get();
             context.getSource().sendSuccess(() -> Component.literal(text), false);
             return 1;
         });
