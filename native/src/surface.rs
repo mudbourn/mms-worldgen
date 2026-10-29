@@ -761,6 +761,65 @@ pub fn zoom_biome(
 }
 
 // Mutable state of one surface build: the blocks, heightmaps and the rule context.
+// Where in a column a rule or condition may hold: near stone above or below, low or high y, or anywhere.
+#[derive(Clone, Copy)]
+struct Gate {
+    anywhere: bool,
+    above: i64,
+    below: i64,
+    y_low: i64,
+    y_high: i64,
+}
+
+impl Gate {
+    const NOWHERE: Gate = Gate {
+        anywhere: false,
+        above: i64::MIN,
+        below: i64::MIN,
+        y_low: i64::MIN,
+        y_high: i64::MAX,
+    };
+    const ANYWHERE: Gate = Gate {
+        anywhere: true,
+        ..Gate::NOWHERE
+    };
+
+    fn is_nowhere(&self) -> bool {
+        !self.anywhere
+            && self.above == i64::MIN
+            && self.below == i64::MIN
+            && self.y_low == i64::MIN
+            && self.y_high == i64::MAX
+    }
+
+    fn union(self, other: Gate) -> Gate {
+        Gate {
+            anywhere: self.anywhere || other.anywhere,
+            above: self.above.max(other.above),
+            below: self.below.max(other.below),
+            y_low: self.y_low.max(other.y_low),
+            y_high: self.y_high.min(other.y_high),
+        }
+    }
+
+    // A superset of both gates holding at once: whichever of the two is narrower.
+    fn both(self, other: Gate) -> Gate {
+        if self.is_nowhere() || other.anywhere {
+            self
+        } else {
+            other
+        }
+    }
+
+    fn allows(&self, above: i32, below: i32, y: i32) -> bool {
+        self.anywhere
+            || (above as i64) <= self.above
+            || (below as i64) <= self.below
+            || (y as i64) <= self.y_low
+            || (y as i64) >= self.y_high
+    }
+}
+
 struct Run<'a> {
     s: &'a Surface,
     inp: &'a Input<'a>,
@@ -789,6 +848,8 @@ struct Run<'a> {
     corners: Vec<[(f64, f64, f64); 4]>,
     biome: Option<usize>,
     cell: Option<(i32, i32, [i32; 4])>,
+    gate_stamp: Vec<u32>,
+    gates: Vec<Gate>,
 }
 
 impl<'a> Run<'a> {
@@ -821,6 +882,8 @@ impl<'a> Run<'a> {
             corners: vec![[(0.0, 0.0, 0.0); 4]; corner_slots(inp)],
             biome: None,
             cell: None,
+            gate_stamp: vec![0; s.rules.len()],
+            gates: vec![Gate::NOWHERE; s.rules.len()],
         }
     }
 
@@ -1032,6 +1095,7 @@ impl<'a> Run<'a> {
 
                 let p = self.surface[self.column()];
                 self.update_xz(m, n);
+                let gate = self.rule_gate(s.root as i32);
                 let mut q = 0;
                 let mut r = i32::MIN;
                 let mut stone_floor = i32::MAX;
@@ -1062,7 +1126,7 @@ impl<'a> Run<'a> {
                         q += 1;
                         let below = u - stone_floor + 1;
                         self.update_y(q, below, r, u);
-                        if state == s.default_block {
+                        if state == s.default_block && gate.allows(q, below, u) {
                             if let Some(replacement) = self.rule(s.root as i32, m, u, n) {
                                 self.set_block(u, replacement);
                             }
@@ -1227,6 +1291,128 @@ impl<'a> Run<'a> {
                 self.rule(node[1], x, y, z)
             }
             _ => None,
+        }
+    }
+
+    // The gate of a rule for the current column, cached per column.
+    fn rule_gate(&mut self, id: i32) -> Gate {
+        let index = id as usize;
+        if self.gate_stamp[index] == self.column_stamp {
+            return self.gates[index];
+        }
+        let s = self.s;
+        let node = s.rules[index];
+        let gate = match node[0] {
+            R_SEQUENCE => {
+                let mut gate = Gate::NOWHERE;
+                for i in 0..node[2] {
+                    gate = gate.union(self.rule_gate(s.lists[(node[1] + i) as usize]));
+                }
+                gate
+            }
+            R_TEST => {
+                let cond = self.cond_gate(node[1], true);
+                if cond.is_nowhere() {
+                    cond
+                } else {
+                    cond.both(self.rule_gate(node[2]))
+                }
+            }
+            _ => Gate::ANYWHERE,
+        };
+        self.gate_stamp[index] = self.column_stamp;
+        self.gates[index] = gate;
+        gate
+    }
+
+    // The gate of a condition holding, or of it failing when holds is false.
+    fn cond_gate(&mut self, id: i32, holds: bool) -> Gate {
+        let s = self.s;
+        let node = s.conds[id as usize];
+        let depth = self.surface_depth as i64;
+        match node[0] {
+            C_GRADIENT => {
+                if holds {
+                    Gate {
+                        y_low: node[3] as i64 - 1,
+                        ..Gate::NOWHERE
+                    }
+                } else {
+                    Gate {
+                        y_high: node[2] as i64 + 1,
+                        ..Gate::NOWHERE
+                    }
+                }
+            }
+            C_Y => {
+                let limit = node[1] as i64 + depth * node[2] as i64;
+                if !holds {
+                    Gate {
+                        y_low: limit - 1,
+                        ..Gate::NOWHERE
+                    }
+                } else if node[3] != 0 {
+                    Gate::ANYWHERE
+                } else {
+                    Gate {
+                        y_high: limit,
+                        ..Gate::NOWHERE
+                    }
+                }
+            }
+            C_HOLE => {
+                if (self.surface_depth <= 0) == holds {
+                    Gate::ANYWHERE
+                } else {
+                    Gate::NOWHERE
+                }
+            }
+            C_ABOVE_PRELIMINARY => {
+                let level = self.min_surface_level() as i64;
+                if holds {
+                    Gate {
+                        y_high: level,
+                        ..Gate::NOWHERE
+                    }
+                } else {
+                    Gate {
+                        y_low: level - 1,
+                        ..Gate::NOWHERE
+                    }
+                }
+            }
+            C_STONE_DEPTH if holds => {
+                let surface = if node[2] != 0 { depth } else { 0 };
+                let spread = (s.noises[NOISE_SURFACE_SECONDARY].max_value() + 1.0) * 0.5;
+                let secondary = (spread * node[3] as f64).abs().ceil() as i64 + 1;
+                let limit = 1 + node[1] as i64 + surface + secondary;
+                if node[4] != 0 {
+                    Gate {
+                        below: limit,
+                        ..Gate::NOWHERE
+                    }
+                } else {
+                    Gate {
+                        above: limit,
+                        ..Gate::NOWHERE
+                    }
+                }
+            }
+            C_NOT => self.cond_gate(node[1], !holds),
+            C_ALL | C_ANY => {
+                let union = (node[0] == C_ANY) == holds;
+                let mut gate = if union { Gate::NOWHERE } else { Gate::ANYWHERE };
+                for i in 0..node[2] {
+                    let child = self.cond_gate(s.lists[(node[1] + i) as usize], holds);
+                    gate = if union {
+                        gate.union(child)
+                    } else {
+                        gate.both(child)
+                    };
+                }
+                gate
+            }
+            _ => Gate::ANYWHERE,
         }
     }
 

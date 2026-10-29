@@ -25,6 +25,7 @@ public final class WorldgenConfig {
     public Compat compat = new Compat();
     public Movement movement = new Movement();
     public Templates templates = new Templates();
+    public PreChunk prechunk = new PreChunk();
 
     public static final class Scheduling {
         public boolean enabled = false;
@@ -136,6 +137,15 @@ public final class WorldgenConfig {
         public boolean diskCache = false;
     }
 
+    public static final class PreChunk {
+        public boolean enabled = true;
+        public int margin = 3;
+
+        private void validate() {
+            margin = fix("prechunk.margin", margin, 0, 32);
+        }
+    }
+
     private static int fix(String field, int value, int min, int max) {
         int fixed = Math.max(min, Math.min(max, value));
         if (fixed != value) {
@@ -193,9 +203,13 @@ public final class WorldgenConfig {
         if (templates == null) {
             templates = new Templates();
         }
+        if (prechunk == null) {
+            prechunk = new PreChunk();
+        }
         scheduling.validate();
         parity.validate();
         rust.validate();
+        prechunk.validate();
     }
 
     private void save() {

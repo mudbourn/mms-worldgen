@@ -3,6 +3,7 @@ package info.mudbourn.mmsworldgen.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import info.mudbourn.mmsworldgen.parity.ParityCommand;
+import info.mudbourn.mmsworldgen.prechunk.PreChunkCommand;
 import info.mudbourn.mmsworldgen.router.RouterCommand;
 import info.mudbourn.mmsworldgen.rust.RustCommand;
 import info.mudbourn.mmsworldgen.sched.SchedCommand;
@@ -24,6 +25,7 @@ public final class WorldgenCommand {
         root.then(RouterCommand.build());
         root.then(RustCommand.build());
         root.then(TemplateCache.build());
+        root.then(PreChunkCommand.build());
         dispatcher.register(root);
     }
 }
