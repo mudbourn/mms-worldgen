@@ -1,5 +1,7 @@
 use crate::mth::{self, clamp, java_max, java_min};
-use crate::tree::{mapped, MappedKind, MarkerKind, Node, Tree};
+use crate::tree::{
+    distance_gradient, distance_gradient_range, mapped, MappedKind, MarkerKind, Node, Tree,
+};
 
 // One lane-wise step of the cell plan; operands are register numbers.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +52,18 @@ enum Op {
         xz_scale: f64,
         y_scale: f64,
     },
+    Spline {
+        dst: usize,
+        spline: usize,
+        table: usize,
+    },
+    Distance {
+        dst: usize,
+        min_distance: i32,
+        max_distance: i32,
+        from_value: f64,
+        to_value: f64,
+    },
     Expand(usize, usize),
 }
 
@@ -60,6 +74,7 @@ pub struct Lanes<'a> {
     pub zs: &'a [i32],
     pub layer_ys: &'a [i32],
     pub layer_of: &'a [usize],
+    pub columns: usize,
 }
 
 // A density function whose cheap nodes run over every block of a cell at once.
@@ -67,6 +82,7 @@ pub struct CellPlan {
     ops: Vec<Op>,
     layer_only: Vec<bool>,
     constants: Vec<(usize, f64)>,
+    spline_regs: Vec<Vec<(usize, usize)>>,
     registers: usize,
     root: usize,
 }
@@ -239,6 +255,44 @@ impl Compiler<'_> {
                 );
                 dst
             }
+            Node::Spline(spline) => {
+                let nodes = self.tree.spline_coordinate_nodes(spline);
+                let mut regs = Vec::with_capacity(nodes.len());
+                for node in &nodes {
+                    regs.push(self.visit(*node)?);
+                }
+                let layer = regs.iter().all(|r| self.layer_reg[*r]);
+                if !layer {
+                    regs = regs.iter().map(|r| self.lane(*r)).collect();
+                }
+                let table = self.plan.spline_regs.len();
+                self.plan
+                    .spline_regs
+                    .push(nodes.into_iter().zip(regs).collect());
+                let dst = self.fresh();
+                self.layer_reg[dst] = layer;
+                self.push(Op::Spline { dst, spline, table }, layer);
+                dst
+            }
+            Node::DistanceGradient {
+                min_distance,
+                max_distance,
+                from_value,
+                to_value,
+            } => {
+                let dst = self.fresh();
+                self.push(
+                    Op::Distance {
+                        dst,
+                        min_distance,
+                        max_distance,
+                        from_value,
+                        to_value,
+                    },
+                    false,
+                );
+                dst
+            }
             Node::Marker { input, kind } => match kind {
                 MarkerKind::Interpolated => {
                     let dst = self.fresh();
@@ -347,6 +401,7 @@ impl CellPlan {
                 ops: Vec::new(),
                 layer_only: Vec::new(),
                 constants: Vec::new(),
+                spline_regs: Vec::new(),
                 registers: 0,
                 root: 0,
             },
@@ -363,6 +418,7 @@ impl CellPlan {
         corners: &[(f64, f64)],
         y_low: i32,
         y_high: i32,
+        area: [i32; 4],
     ) -> Option<(f64, f64)> {
         bounds.clear();
         bounds.resize(self.registers, (0.0, 0.0));
@@ -445,6 +501,32 @@ impl CellPlan {
                     let max = tree.noise_max(noise);
                     (dst, (-max, max))
                 }
+                Op::Spline { dst, spline, table } => {
+                    let coordinates = &self.spline_regs[table];
+                    let (low, high) = tree.spline_range(spline, &|node| {
+                        coordinates
+                            .iter()
+                            .find(|c| c.0 == node)
+                            .map_or((f64::NAN, f64::NAN), |c| bounds[c.1])
+                    })?;
+                    (
+                        dst,
+                        (
+                            low - (low.abs() * 1e-5 + 1e-5),
+                            high + (high.abs() * 1e-5 + 1e-5),
+                        ),
+                    )
+                }
+                Op::Distance {
+                    dst,
+                    min_distance,
+                    max_distance,
+                    from_value,
+                    to_value,
+                } => (
+                    dst,
+                    distance_gradient_range(area, min_distance, max_distance, from_value, to_value),
+                ),
                 Op::Expand(dst, src) => (dst, bounds[src]),
             };
             if !range.0.is_finite() || !range.1.is_finite() {
@@ -493,7 +575,9 @@ impl CellPlan {
                 | Op::Range { dst, .. }
                 | Op::Gradient { dst, .. }
                 | Op::Interpolated { dst, .. }
-                | Op::Noise { dst, .. } => dst,
+                | Op::Noise { dst, .. }
+                | Op::Spline { dst, .. }
+                | Op::Distance { dst, .. } => dst,
                 Op::Expand(dst, _) => dst,
             };
             let (before, after) = regs.split_at_mut(dst * stride);
@@ -583,12 +667,52 @@ impl CellPlan {
                     y_scale,
                     ..
                 } => {
-                    for (l, o) in out.iter_mut().enumerate() {
+                    let columns = if y_scale == 0.0 { at.columns } else { lanes };
+                    for (l, o) in out[..columns].iter_mut().enumerate() {
                         *o = tree.noise_value(
                             noise,
                             at.xs[l] as f64 * xz_scale,
                             at.ys[l] as f64 * y_scale,
                             at.zs[l] as f64 * xz_scale,
+                        );
+                    }
+                    for l in columns..lanes {
+                        out[l] = if (at.ys[l] < 0) == (at.ys[l - columns] < 0) {
+                            out[l - columns]
+                        } else {
+                            tree.noise_value(
+                                noise,
+                                at.xs[l] as f64 * xz_scale,
+                                at.ys[l] as f64 * y_scale,
+                                at.zs[l] as f64 * xz_scale,
+                            )
+                        };
+                    }
+                }
+                Op::Spline { spline, table, .. } => {
+                    let coordinates = &self.spline_regs[table];
+                    for (l, o) in out.iter_mut().enumerate() {
+                        *o = tree.spline_with(spline, &mut |node| {
+                            let reg = coordinates.iter().find(|c| c.0 == node).map_or(0, |c| c.1);
+                            before[reg * stride + l] as f32
+                        }) as f64;
+                    }
+                }
+                Op::Distance {
+                    min_distance,
+                    max_distance,
+                    from_value,
+                    to_value,
+                    ..
+                } => {
+                    for (l, o) in out.iter_mut().enumerate() {
+                        *o = distance_gradient(
+                            at.xs[l],
+                            at.zs[l],
+                            min_distance,
+                            max_distance,
+                            from_value,
+                            to_value,
                         );
                     }
                 }

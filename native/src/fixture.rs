@@ -7,8 +7,10 @@ use std::time::Instant;
 
 const ROUTER: &str = include_str!("../testdata/overworld_router.txt");
 const AERIAL_ROUTER: &str = include_str!("../testdata/aerial_hell_router.txt");
+const END_ROUTER: &str = include_str!("../testdata/end_router.txt");
 const GOLDEN: &str = include_str!("../testdata/golden.txt");
 const AERIAL_GOLDEN: &str = include_str!("../testdata/aerial_hell_golden.txt");
+const END_GOLDEN: &str = include_str!("../testdata/end_golden.txt");
 
 // Stage settings: min y, height, cell sizes, sea level, aquifers, veins, roles, c2me order.
 const VARIANTS: [[i32; 18]; 5] = [
@@ -19,6 +21,7 @@ const VARIANTS: [[i32; 18]; 5] = [
     [-64, 384, 4, 4, 63, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1],
 ];
 const AERIAL_SETTINGS: [i32; 18] = [0, 256, 2, 1, -64, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
+const END_SETTINGS: [i32; 18] = [-48, 320, 2, 1, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
 const FLAGS: [i32; 10] = [1, 2, 8, 4, 2, 2, 2, 2, 2, 2];
 const SEEDS: [i64; 3] = [0, 1234567890123, -987654321];
 const CHUNK_COUNT: usize = 20;
@@ -79,6 +82,11 @@ pub fn stage(seed: i64, variant: usize) -> Stage {
 fn aerial_stage(seed: i64) -> Stage {
     let tree = Arc::new(Tree::build(&spec_of(AERIAL_ROUTER, seed, true)).unwrap());
     Stage::new(tree, seed, true, &AERIAL_SETTINGS, FLAGS.to_vec()).unwrap()
+}
+
+fn end_stage(seed: i64) -> Stage {
+    let tree = Arc::new(Tree::build(&spec_of(END_ROUTER, seed, true)).unwrap());
+    Stage::new(tree, seed, true, &END_SETTINGS, FLAGS.to_vec()).unwrap()
 }
 
 // Chunk positions spread over land, ocean and mountains, the first few near the origin.
@@ -284,6 +292,46 @@ fn aerial_hell_fill_matches_golden_hashes() {
     }
 }
 
+fn end_hashes() -> Vec<(String, u64)> {
+    let stage = end_stage(SEEDS[1]);
+    chunks(SEEDS[1])
+        .iter()
+        .map(|&(cx, cz)| {
+            let result = stage.fill(cx, cz, -48, 271, &[0]).unwrap();
+            (format!("end {cx} {cz}"), hash(&result))
+        })
+        .collect()
+}
+
+#[test]
+fn end_fill_matches_golden_hashes() {
+    let hashes = end_hashes();
+    if std::env::var("WRITE_GOLDEN").is_ok() {
+        let text: String = hashes
+            .iter()
+            .map(|(k, v)| format!("{k} = {v:x}\n"))
+            .collect();
+        std::fs::write(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/end_golden.txt"),
+            text,
+        )
+        .unwrap();
+        return;
+    }
+    let golden: HashMap<&str, &str> = END_GOLDEN
+        .lines()
+        .filter_map(|l| l.split_once(" = "))
+        .collect();
+    assert_eq!(golden.len(), hashes.len());
+    for (key, value) in hashes {
+        assert_eq!(
+            golden.get(key.as_str()).copied(),
+            Some(format!("{value:x}").as_str()),
+            "{key}"
+        );
+    }
+}
+
 #[test]
 fn marks_are_sorted_fluid_blocks_and_present_with_aquifers() {
     let stage = stage(0, 0);
@@ -360,6 +408,32 @@ fn bench_fill_chunk_aerial_hell() {
     let count = grid.len() * rounds;
     let ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
     println!("fillChunk aerial hell {ms:.2} ms per chunk over {count} chunks");
+}
+
+#[test]
+#[ignore]
+fn bench_fill_chunk_end() {
+    let stage = end_stage(SEEDS[1]);
+    let grid: Vec<(i32, i32)> = (0..6)
+        .flat_map(|x| (0..6).map(move |z| (x * 3, z * 3)))
+        .collect();
+    for &(cx, cz) in grid.iter().take(2) {
+        std::hint::black_box(stage.fill(cx, cz, -48, 271, &[0]).unwrap());
+    }
+    let rounds: usize = std::env::var("BENCH_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let start = Instant::now();
+    for round in 0..rounds as i32 {
+        for &(cx, cz) in &grid {
+            let result = stage.fill(cx + 200 + round * 30, cz + 200, -48, 271, &[0]);
+            std::hint::black_box(result.unwrap());
+        }
+    }
+    let count = grid.len() * rounds;
+    let ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
+    println!("fillChunk end {ms:.2} ms per chunk over {count} chunks");
 }
 
 #[test]

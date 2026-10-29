@@ -29,6 +29,7 @@ public final class RustOn {
 
     private static final Map<NoiseBasedChunkGenerator, Plan> PLANS = new ConcurrentHashMap<>();
     private static final Map<String, AtomicLong> ACCEPTED_BY_DIMENSION = new ConcurrentHashMap<>();
+    private static final Map<String, AtomicLong> NANOS_BY_DIMENSION = new ConcurrentHashMap<>();
     private static final AtomicLong ACCEPTED = new AtomicLong();
     private static final AtomicLong FALLBACK_BLEND = new AtomicLong();
     private static final AtomicLong FALLBACK_DIMENSION = new AtomicLong();
@@ -103,7 +104,9 @@ public final class RustOn {
                 chunk.getMaxY(),
                 RustShadow.beardifier(noiseChunk)
             );
-            RUST_NANOS.addAndGet(System.nanoTime() - start);
+            long elapsed = System.nanoTime() - start;
+            RUST_NANOS.addAndGet(elapsed);
+            NANOS_BY_DIMENSION.computeIfAbsent(plan.dimension(), ignored -> new AtomicLong()).addAndGet(elapsed);
         } catch (Throwable e) {
             if (DISABLED.compareAndSet(false, true)) {
                 MmsWorldgen.LOG.warn("Rust on disabled for this session: {}", e.toString());
@@ -186,7 +189,12 @@ public final class RustOn {
         return ACCEPTED_BY_DIMENSION.entrySet()
             .stream()
             .sorted(Map.Entry.comparingByKey())
-            .map(e -> e.getKey() + " accepted=" + e.getValue().get())
+            .map(e -> {
+                long accepted = e.getValue().get();
+                long nanos = NANOS_BY_DIMENSION.getOrDefault(e.getKey(), new AtomicLong()).get();
+                String average = accepted == 0 ? "n/a" : String.format("%.2fms", nanos / 1.0e6 / accepted);
+                return e.getKey() + " accepted=" + accepted + " rust_avg=" + average;
+            })
             .reduce((a, b) -> a + "; " + b)
             .orElse("");
     }

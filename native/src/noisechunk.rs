@@ -262,6 +262,7 @@ pub struct Eval<'a> {
     cell_start: [i32; 3],
     in_cell: [i32; 3],
     flat: Vec<Option<Vec<f64>>>,
+    column: Vec<Option<(i32, i32, f64)>>,
     interp_of: Vec<usize>,
     cell_of: Vec<usize>,
     interpolators: Vec<Interpolator>,
@@ -366,6 +367,7 @@ impl<'a> Eval<'a> {
             cell_start: [0; 3],
             in_cell: [0; 3],
             flat: vec![None; tree.node_count()],
+            column: vec![None; tree.node_count()],
             interp_of,
             cell_of,
             interpolators,
@@ -501,6 +503,7 @@ impl<'a> Eval<'a> {
             self.corner_ranges[n] = interpolator.corner_range();
         }
         self.fractions.bump(0);
+        self.cell_start[2] = (layout.first_cell_z + z) * layout.cell_width;
         if self.beard.is_empty() {
             match self.density_range(tree, bottom) {
                 Some((_, high)) if high < 0.0 && bottom > empty_above => return CellState::Empty,
@@ -522,7 +525,6 @@ impl<'a> Eval<'a> {
         self.filling_cell = true;
         self.in_chunk = true;
         self.cell_start[1] = (y + layout.cell_noise_min_y) * layout.cell_height;
-        self.cell_start[2] = (layout.first_cell_z + z) * layout.cell_width;
         for c in 0..self.cell_caches.len() {
             let input = self.cell_caches[c].input;
             if input.is_none() && self.fill_final_density(tree) {
@@ -557,7 +559,17 @@ impl<'a> Eval<'a> {
     fn density_range(&mut self, tree: &Tree, bottom: i32) -> Option<(f64, f64)> {
         let plan = tree.cell_plan(ROOT_FINAL_DENSITY)?;
         let top = bottom + self.layout.cell_height - 1;
-        plan.root_range(tree, &mut self.bounds, &self.corner_ranges, bottom, top)
+        let x = self.cell_start[0];
+        let z = self.cell_start[2];
+        let width = self.layout.cell_width - 1;
+        plan.root_range(
+            tree,
+            &mut self.bounds,
+            &self.corner_ranges,
+            bottom,
+            top,
+            [x, x + width, z, z + width],
+        )
     }
 
     // Runs a cell plan over the lanes of the selected cell.
@@ -581,6 +593,7 @@ impl<'a> Eval<'a> {
             zs: &self.lane_zs,
             layer_ys: &self.layer_ys,
             layer_of: &self.layer_of,
+            columns: (self.layout.cell_width * self.layout.cell_width) as usize,
         };
         plan.run(tree, &mut self.plan_regs, lanes, &at, &self.cells);
     }
@@ -707,6 +720,14 @@ impl Hooks for Eval<'_> {
     ) -> f64 {
         match kind {
             MarkerKind::FlatCache => self.flat_cache(tree, id, input, x, y, z),
+            MarkerKind::Cache2d => match self.column[id] {
+                Some((cx, cz, value)) if cx == x && cz == z => value,
+                _ => {
+                    let value = tree.eval_here(input, x, y, z, self);
+                    self.column[id] = Some((x, z, value));
+                    value
+                }
+            },
             MarkerKind::Interpolated if self.in_chunk && self.interp_of[id] != NO_INDEX => {
                 let interpolator = &mut self.interpolators[self.interp_of[id]];
                 if !self.filling_cell {

@@ -994,18 +994,7 @@ impl Tree {
                 max_distance,
                 from_value,
                 to_value,
-            } => {
-                let f = x as f32;
-                let g = z as f32;
-                let distance = float_sqrt(f * f + g * g);
-                mth::clamped_map(
-                    distance as f64,
-                    min_distance as f64,
-                    max_distance as f64,
-                    from_value,
-                    to_value,
-                )
-            }
+            } => distance_gradient(x, z, min_distance, max_distance, from_value, to_value),
             Node::EndIslands => match &self.islands {
                 Some(noise) => (end_island_height(noise, x / 8, z / 8) as f64 - 8.0) / 128.0,
                 None => 0.0,
@@ -1018,6 +1007,13 @@ impl Tree {
     }
 
     fn spline<H: Hooks>(&self, id: usize, x: i32, y: i32, z: i32, hk: &mut H) -> f32 {
+        self.spline_with(id, &mut |coordinate| {
+            self.eval_here(coordinate, x, y, z, hk) as f32
+        })
+    }
+
+    // Evaluates a spline, reading each coordinate node through a callback.
+    pub fn spline_with<F: FnMut(usize) -> f32>(&self, id: usize, coordinate_of: &mut F) -> f32 {
         match &self.splines[id] {
             Spline::Constant(v) => *v,
             Spline::Multipoint {
@@ -1026,16 +1022,16 @@ impl Tree {
                 derivatives,
                 values,
             } => {
-                let f = self.eval_here(*coordinate, x, y, z, hk) as f32;
+                let f = coordinate_of(*coordinate);
                 let i = find_interval_start(locations, f);
                 let j = locations.len() - 1;
                 if i < 0 {
-                    let v = self.spline(values[0], x, y, z, hk);
+                    let v = self.spline_with(values[0], coordinate_of);
                     return linear_extend(f, locations, v, derivatives, 0);
                 }
                 let i = i as usize;
                 if i == j {
-                    let v = self.spline(values[j], x, y, z, hk);
+                    let v = self.spline_with(values[j], coordinate_of);
                     return linear_extend(f, locations, v, derivatives, j);
                 }
                 let g = locations[i];
@@ -1043,14 +1039,151 @@ impl Tree {
                 let k = (f - g) / (h - g);
                 let l = derivatives[i];
                 let m = derivatives[i + 1];
-                let n = self.spline(values[i], x, y, z, hk);
-                let o = self.spline(values[i + 1], x, y, z, hk);
+                let n = self.spline_with(values[i], coordinate_of);
+                let o = self.spline_with(values[i + 1], coordinate_of);
                 let p = l * (h - g) - (o - n);
                 let q = -m * (h - g) + (o - n);
                 lerp_f32(k, n, o) + k * (1.0 - k) * lerp_f32(k, p, q)
             }
         }
     }
+
+    // Lists the coordinate nodes of a spline and of every spline nested in it.
+    pub fn spline_coordinate_nodes(&self, id: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.spline_coordinates(id, &mut out);
+        out
+    }
+
+    // Bounds a spline whose derivatives are all zero over coordinate ranges from range_of.
+    pub fn spline_range<F: Fn(usize) -> (f64, f64)>(
+        &self,
+        id: usize,
+        range_of: &F,
+    ) -> Option<(f64, f64)> {
+        match &self.splines[id] {
+            Spline::Constant(v) => Some((*v as f64, *v as f64)),
+            Spline::Multipoint {
+                coordinate,
+                locations,
+                derivatives,
+                values,
+            } => {
+                if derivatives.iter().any(|d| *d != 0.0) {
+                    return None;
+                }
+                let (low_in, high_in) = range_of(*coordinate);
+                let low_in = low_in - (low_in.abs() * 1e-5 + 1e-5);
+                let high_in = high_in + (high_in.abs() * 1e-5 + 1e-5);
+                if !low_in.is_finite() || !high_in.is_finite() {
+                    return None;
+                }
+                let last = locations.len() - 1;
+                let mut hull = [f64::INFINITY, f64::NEG_INFINITY, 0.0];
+                if low_in < locations[0] as f64 {
+                    take(&mut hull, self.spline_range(values[0], range_of)?, true);
+                }
+                if high_in >= locations[last] as f64 {
+                    take(&mut hull, self.spline_range(values[last], range_of)?, true);
+                }
+                for i in 0..last {
+                    let (g, h) = (locations[i] as f64, locations[i + 1] as f64);
+                    if high_in < g || low_in > h {
+                        continue;
+                    }
+                    let n = self.spline_range(values[i], range_of)?;
+                    let o = self.spline_range(values[i + 1], range_of)?;
+                    take(&mut hull, n, h <= g);
+                    take(&mut hull, o, h <= g);
+                    if h <= g {
+                        continue;
+                    }
+                    let smooth = |f: f64| {
+                        let k = ((f - g) / (h - g)).clamp(0.0, 1.0);
+                        k * k * (3.0 - 2.0 * k)
+                    };
+                    let s_low = (smooth(low_in.max(g)) - 1e-6).max(0.0);
+                    let s_high = (smooth(high_in.min(h)) + 1e-6).min(1.0);
+                    for s in [s_low, s_high] {
+                        for a in [n.0, n.1] {
+                            for b in [o.0, o.1] {
+                                let v = a + s * (b - a);
+                                take(&mut hull, (v, v), true);
+                            }
+                        }
+                    }
+                }
+                let [low, high, scale] = hull;
+                if low > high {
+                    return None;
+                }
+                Some((low - scale * 1e-6, high + scale * 1e-6))
+            }
+        }
+    }
+}
+
+// Folds a range into the magnitude, and into the hull when reached.
+fn take(hull: &mut [f64; 3], range: (f64, f64), reached: bool) {
+    if reached {
+        hull[0] = hull[0].min(range.0);
+        hull[1] = hull[1].max(range.1);
+    }
+    hull[2] = hull[2].max(range.0.abs()).max(range.1.abs());
+}
+
+// DistanceGradient: a clamped map of the block distance from the origin.
+pub fn distance_gradient(
+    x: i32,
+    z: i32,
+    min_distance: i32,
+    max_distance: i32,
+    from_value: f64,
+    to_value: f64,
+) -> f64 {
+    let f = x as f32;
+    let g = z as f32;
+    let distance = float_sqrt(f * f + g * g);
+    mth::clamped_map(
+        distance as f64,
+        min_distance as f64,
+        max_distance as f64,
+        from_value,
+        to_value,
+    )
+}
+
+// Bounds distance_gradient over a block area given as x low, x high, z low and z high.
+pub fn distance_gradient_range(
+    area: [i32; 4],
+    min_distance: i32,
+    max_distance: i32,
+    from_value: f64,
+    to_value: f64,
+) -> (f64, f64) {
+    let near = |low: i32, high: i32| {
+        if low <= 0 && high >= 0 {
+            0.0
+        } else {
+            low.abs().min(high.abs()) as f64
+        }
+    };
+    let far = |low: i32, high: i32| low.abs().max(high.abs()) as f64;
+    let d_low = near(area[0], area[1]).hypot(near(area[2], area[3]));
+    let d_high = far(area[0], area[1]).hypot(far(area[2], area[3]));
+    let d_low = d_low - (d_low * 1e-5 + 1e-3);
+    let d_high = d_high + (d_high * 1e-5 + 1e-3);
+    let at = |d: f64| {
+        mth::clamped_map(
+            d,
+            min_distance as f64,
+            max_distance as f64,
+            from_value,
+            to_value,
+        )
+    };
+    let (a, b) = (at(d_low), at(d_high));
+    (a.min(b), a.max(b))
 }
 
 #[cfg(test)]
@@ -1199,6 +1332,67 @@ mod tests {
         spec.point_values.extend([0.0, 2.0, 1.0, 0.0]);
         let root = node(&mut spec, [SPLINE, 2, 0, 0, 0], [0.0, 0.0]);
         assert_eq!(eval(spec, root, 0, 2, 0), 0.75);
+    }
+
+    #[test]
+    fn spline_range_encloses_random_samples() {
+        let mut spec = Spec::default();
+        let a = constant(&mut spec, 0.0) as usize;
+        let b = constant(&mut spec, 0.0) as usize;
+        spec.spline_ints.extend([
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, b as i32, 2, 0, 1, a as i32, 3, 2,
+        ]);
+        spec.spline_consts.extend([2.0, -1.0, 4.0, 0.0, 0.0]);
+        spec.point_children.extend([0, 1, 3, 2, 1]);
+        spec.point_values
+            .extend([-0.5, 0.0, 0.5, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        let root = node(&mut spec, [SPLINE, 4, 0, 0, 0], [0.0, 0.0]);
+        spec.roots = vec![root];
+        let tree = Tree::build(&spec).unwrap();
+        let mut state = 7u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..2000 {
+            let a_low = next() * 4.0 - 2.0;
+            let b_low = next() * 3.0 - 1.5;
+            let ra = (a_low, a_low + next() * 1.5);
+            let rb = (b_low, b_low + next());
+            let range_of = |node: usize| if node == a { ra } else { rb };
+            let (low, high) = tree.spline_range(4, &range_of).unwrap();
+            for _ in 0..20 {
+                let fa = (ra.0 + next() * (ra.1 - ra.0)) as f32;
+                let fb = (rb.0 + next() * (rb.1 - rb.0)) as f32;
+                let v = tree.spline_with(4, &mut |node| if node == a { fa } else { fb }) as f64;
+                assert!(v >= low && v <= high, "{v} outside {low}..{high}");
+            }
+        }
+        let flat = |node: usize| if node == a { (1.5, 2.0) } else { (0.0, 0.0) };
+        let (low, high) = tree.spline_range(4, &flat).unwrap();
+        assert!(high - low < 1e-4);
+    }
+
+    #[test]
+    fn distance_gradient_range_encloses_the_area() {
+        let mut state = 11u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) % 6000) as i32 - 3000
+        };
+        for _ in 0..500 {
+            let (x, z) = (next(), next());
+            let area = [x, x + 7, z, z + 7];
+            let (low, high) = distance_gradient_range(area, 0, 1500, -2.0, 0.0);
+            for (dx, dz) in [(0, 0), (7, 0), (0, 7), (7, 7), (3, 4)] {
+                let v = distance_gradient(x + dx, z + dz, 0, 1500, -2.0, 0.0);
+                assert!(v >= low && v <= high, "{v} outside {low}..{high}");
+            }
+        }
     }
 
     #[test]

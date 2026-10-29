@@ -6,6 +6,7 @@ import sys
 ROOT = sys.argv[1]
 OUT = sys.argv[2]
 SETTINGS = sys.argv[3] if len(sys.argv) > 3 else "overworld"
+EXTRA = sys.argv[4] if len(sys.argv) > 4 else None
 FIELDS = [
     "barrier",
     "fluid_level_floodedness",
@@ -41,8 +42,14 @@ MAPPED = {
 }
 
 
-def load(path):
-    with open(os.path.join(ROOT, path)) as f:
+def load(kind, name):
+    space, _, path = name.rpartition(":")
+    space = space or "minecraft"
+    if EXTRA is not None and space != "minecraft":
+        base = os.path.join(EXTRA, space, "worldgen")
+    else:
+        base = ROOT
+    with open(os.path.join(base, kind, path + ".json")) as f:
         return json.load(f)
 
 
@@ -51,7 +58,7 @@ def bits(v):
 
 
 def strip(name):
-    return name.split(":", 1)[1]
+    return name.split(":", 1)[-1]
 
 
 class Builder:
@@ -74,7 +81,7 @@ class Builder:
 
     def noise(self, name):
         if name not in self.noise_ids:
-            data = load("noise/" + strip(name) + ".json")
+            data = load("noise", name)
             self.noise_ids[name] = len(self.noises)
             self.noises.append((name, data["firstOctave"], data["amplitudes"]))
         return self.noise_ids[name]
@@ -84,7 +91,7 @@ class Builder:
             return self.emit(0, x=float(f))
         if isinstance(f, str):
             if f not in self.memo:
-                self.memo[f] = self.visit(load("density_function/" + strip(f) + ".json"))
+                self.memo[f] = self.visit(load("density_function", f))
             return self.memo[f]
         return self.build(f)
 
@@ -165,6 +172,18 @@ class Builder:
             return self.emit(22, len(self.blended) // 5 - 1)
         if t == "spline":
             return self.emit(23, self.spline(f["spline"]))
+        if t == "distance_from_center_gradient":
+            return self.emit(
+                24,
+                f["min_distance"],
+                f["max_distance"],
+                0,
+                0,
+                f["from_value"],
+                f["to_value"],
+            )
+        if t == "end_islands":
+            return self.emit(25)
         raise Exception("unsupported " + t)
 
     def spline(self, s):
@@ -185,7 +204,7 @@ class Builder:
 
 
 def main():
-    settings = load("noise_settings/" + SETTINGS + ".json")
+    settings = load("noise_settings", "minecraft:" + SETTINGS)
     router = settings["noise_router"]
     b = Builder()
     roots = [b.visit(router[name]) for name in FIELDS]

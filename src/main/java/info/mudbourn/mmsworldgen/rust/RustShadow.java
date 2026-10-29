@@ -44,6 +44,9 @@ public final class RustShadow {
         private final AtomicLong compared = new AtomicLong();
         private final AtomicLong matched = new AtomicLong();
         private final AtomicLong mismatched = new AtomicLong();
+        private final AtomicLong javaNanos = new AtomicLong();
+        private final AtomicLong javaFills = new AtomicLong();
+        private final AtomicLong rustNanos = new AtomicLong();
     }
 
     private static final int SUMMARY_EVERY = 256;
@@ -55,6 +58,7 @@ public final class RustShadow {
     private static final Set<String> SKIPPED_DIMENSIONS = ConcurrentHashMap.newKeySet();
     private static final Map<String, AtomicLong> PAIRS = new ConcurrentHashMap<>();
     private static final Map<String, Counts> BY_DIMENSION = new ConcurrentHashMap<>();
+    private static final Map<ChunkAccess, Long> PENDING_JAVA_NANOS = new ConcurrentHashMap<>();
     private static final AtomicLong COMPARED = new AtomicLong();
     private static final AtomicLong MATCHED = new AtomicLong();
     private static final AtomicLong MISMATCHED = new AtomicLong();
@@ -156,6 +160,7 @@ public final class RustShadow {
         STAGES.values().forEach(stage -> RustNative.freeStage(stage.handle()));
         STAGES.clear();
         SKIPPED_DIMENSIONS.clear();
+        PENDING_JAVA_NANOS.clear();
     }
 
     // Wraps a NOISE step future so Rust shadows the finished chunk.
@@ -177,16 +182,28 @@ public final class RustShadow {
         }
         return () -> {
             long start = System.nanoTime();
+            ChunkAccess chunk = null;
             try {
-                return fill.get();
+                chunk = fill.get();
+                return chunk;
             } finally {
-                JAVA_NANOS.addAndGet(System.nanoTime() - start);
+                long elapsed = System.nanoTime() - start;
+                JAVA_NANOS.addAndGet(elapsed);
                 JAVA_FILLS.incrementAndGet();
+                if (chunk != null) {
+                    PENDING_JAVA_NANOS.put(chunk, elapsed);
+                }
             }
         };
     }
 
     private static void observe(String dimension, ChunkAccess chunk) {
+        Long javaElapsed = PENDING_JAVA_NANOS.remove(chunk);
+        Counts counts = BY_DIMENSION.computeIfAbsent(dimension, ignored -> new Counts());
+        if (javaElapsed != null) {
+            counts.javaNanos.addAndGet(javaElapsed);
+            counts.javaFills.incrementAndGet();
+        }
         if (DISABLED.get()) {
             return;
         }
@@ -221,7 +238,9 @@ public final class RustShadow {
                 maxY,
                 beardifier(noiseChunk)
             );
-            RUST_NANOS.addAndGet(System.nanoTime() - start);
+            long rustElapsed = System.nanoTime() - start;
+            RUST_NANOS.addAndGet(rustElapsed);
+            counts.rustNanos.addAndGet(rustElapsed);
             compare(dimension, chunk, stage, result, minY, maxY);
         } catch (Throwable e) {
             if (DISABLED.compareAndSet(false, true)) {
@@ -374,7 +393,7 @@ public final class RustShadow {
         }
 
         long compared = COMPARED.incrementAndGet();
-        Counts counts = BY_DIMENSION.computeIfAbsent(dimension, ignored -> new Counts());
+        Counts counts = BY_DIMENSION.get(dimension);
         counts.compared.incrementAndGet();
         if (blockMismatches == 0 && columnMismatches == 0 && markMismatches == 0) {
             MATCHED.incrementAndGet();
@@ -422,9 +441,15 @@ public final class RustShadow {
             .map(e -> e.getKey()
                 + " compared=" + e.getValue().compared.get()
                 + " matched=" + e.getValue().matched.get()
-                + " mismatched=" + e.getValue().mismatched.get())
+                + " mismatched=" + e.getValue().mismatched.get()
+                + " java_avg=" + average(e.getValue().javaNanos.get(), e.getValue().javaFills.get())
+                + " rust_avg=" + average(e.getValue().rustNanos.get(), e.getValue().compared.get()))
             .reduce((a, b) -> a + "; " + b)
             .orElse("");
+    }
+
+    private static String average(long nanos, long count) {
+        return count == 0 ? "n/a" : String.format("%.2fms", nanos / 1.0e6 / count);
     }
 
     // One line with the shadow counters and average times.
