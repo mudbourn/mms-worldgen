@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const ROUTER: &str = include_str!("../testdata/overworld_router.txt");
+const AERIAL_ROUTER: &str = include_str!("../testdata/aerial_hell_router.txt");
 const GOLDEN: &str = include_str!("../testdata/golden.txt");
+const AERIAL_GOLDEN: &str = include_str!("../testdata/aerial_hell_golden.txt");
 
 // Stage settings: min y, height, cell sizes, sea level, aquifers, veins, roles, c2me order.
 const VARIANTS: [[i32; 18]; 5] = [
@@ -16,51 +18,67 @@ const VARIANTS: [[i32; 18]; 5] = [
     [-64, 384, 2, 1, 63, 1, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0],
     [-64, 384, 4, 4, 63, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1],
 ];
+const AERIAL_SETTINGS: [i32; 18] = [0, 256, 2, 1, -64, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
 const FLAGS: [i32; 10] = [1, 2, 8, 4, 2, 2, 2, 2, 2, 2];
 const SEEDS: [i64; 3] = [0, 1234567890123, -987654321];
 const CHUNK_COUNT: usize = 20;
 
-fn fields(name: &str) -> Vec<&'static str> {
-    ROUTER
+fn fields(router: &'static str, name: &str) -> Vec<&'static str> {
+    router
         .lines()
         .find(|l| l.split(' ').next() == Some(name))
         .map(|l| l.split(' ').skip(1).collect())
         .unwrap_or_default()
 }
 
-fn ints(name: &str) -> Vec<i32> {
-    fields(name).iter().map(|v| v.parse().unwrap()).collect()
+fn ints(router: &'static str, name: &str) -> Vec<i32> {
+    fields(router, name)
+        .iter()
+        .map(|v| v.parse().unwrap())
+        .collect()
 }
 
-fn doubles(name: &str) -> Vec<f64> {
-    fields(name)
+fn doubles(router: &'static str, name: &str) -> Vec<f64> {
+    fields(router, name)
         .iter()
         .map(|v| f64::from_bits(u64::from_str_radix(v, 16).unwrap()))
         .collect()
 }
 
-pub fn spec(seed: i64) -> Spec {
+fn spec_of(router: &'static str, seed: i64, legacy: bool) -> Spec {
     Spec {
         seed,
-        legacy: false,
-        node_ints: ints("node_ints"),
-        node_doubles: doubles("node_doubles"),
-        noise_keys: fields("noise_keys").iter().map(|k| k.to_string()).collect(),
-        noise_octaves: ints("noise_octaves"),
-        noise_amp_ends: ints("noise_amp_ends"),
-        noise_amps: doubles("noise_amps"),
-        blended: doubles("blended"),
-        spline_ints: ints("spline_ints"),
-        spline_consts: doubles("spline_consts"),
-        point_children: ints("point_children"),
-        point_values: doubles("point_values"),
-        roots: ints("roots"),
+        legacy,
+        node_ints: ints(router, "node_ints"),
+        node_doubles: doubles(router, "node_doubles"),
+        noise_keys: fields(router, "noise_keys")
+            .iter()
+            .map(|k| k.to_string())
+            .collect(),
+        noise_octaves: ints(router, "noise_octaves"),
+        noise_amp_ends: ints(router, "noise_amp_ends"),
+        noise_amps: doubles(router, "noise_amps"),
+        blended: doubles(router, "blended"),
+        spline_ints: ints(router, "spline_ints"),
+        spline_consts: doubles(router, "spline_consts"),
+        point_children: ints(router, "point_children"),
+        point_values: doubles(router, "point_values"),
+        roots: ints(router, "roots"),
     }
+}
+
+pub fn spec(seed: i64) -> Spec {
+    spec_of(ROUTER, seed, false)
 }
 
 pub fn stage(seed: i64, variant: usize) -> Stage {
     let tree = Arc::new(Tree::build(&spec(seed)).unwrap());
     Stage::new(tree, seed, false, &VARIANTS[variant], FLAGS.to_vec()).unwrap()
+}
+
+fn aerial_stage(seed: i64) -> Stage {
+    let tree = Arc::new(Tree::build(&spec_of(AERIAL_ROUTER, seed, true)).unwrap());
+    Stage::new(tree, seed, true, &AERIAL_SETTINGS, FLAGS.to_vec()).unwrap()
 }
 
 // Chunk positions spread over land, ocean and mountains, the first few near the origin.
@@ -223,6 +241,49 @@ fn outputs_match_golden_hashes() {
     }
 }
 
+fn aerial_hashes() -> Vec<(String, u64)> {
+    let stage = aerial_stage(SEEDS[1]);
+    chunks(SEEDS[1])
+        .iter()
+        .map(|&(cx, cz)| {
+            let result = stage.fill(cx, cz, 0, 255, &[0]).unwrap();
+            (format!("aerial {cx} {cz}"), hash(&result))
+        })
+        .collect()
+}
+
+#[test]
+fn aerial_hell_fill_matches_golden_hashes() {
+    let hashes = aerial_hashes();
+    if std::env::var("WRITE_GOLDEN").is_ok() {
+        let text: String = hashes
+            .iter()
+            .map(|(k, v)| format!("{k} = {v:x}\n"))
+            .collect();
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/aerial_hell_golden.txt"
+            ),
+            text,
+        )
+        .unwrap();
+        return;
+    }
+    let golden: HashMap<&str, &str> = AERIAL_GOLDEN
+        .lines()
+        .filter_map(|l| l.split_once(" = "))
+        .collect();
+    assert_eq!(golden.len(), hashes.len());
+    for (key, value) in hashes {
+        assert_eq!(
+            golden.get(key.as_str()).copied(),
+            Some(format!("{value:x}").as_str()),
+            "{key}"
+        );
+    }
+}
+
 #[test]
 fn marks_are_sorted_fluid_blocks_and_present_with_aquifers() {
     let stage = stage(0, 0);
@@ -273,6 +334,32 @@ fn bench_fill_chunk() {
     let count = grid.len() * rounds;
     let ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
     println!("fillChunk {ms:.2} ms per chunk over {count} chunks");
+}
+
+#[test]
+#[ignore]
+fn bench_fill_chunk_aerial_hell() {
+    let stage = aerial_stage(SEEDS[1]);
+    let grid: Vec<(i32, i32)> = (0..6)
+        .flat_map(|x| (0..6).map(move |z| (x * 3, z * 3)))
+        .collect();
+    for &(cx, cz) in grid.iter().take(2) {
+        std::hint::black_box(stage.fill(cx, cz, 0, 255, &[0]).unwrap());
+    }
+    let rounds: usize = std::env::var("BENCH_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let start = Instant::now();
+    for round in 0..rounds as i32 {
+        for &(cx, cz) in &grid {
+            let result = stage.fill(cx + 200 + round * 30, cz + 200, 0, 255, &[0]);
+            std::hint::black_box(result.unwrap());
+        }
+    }
+    let count = grid.len() * rounds;
+    let ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
+    println!("fillChunk aerial hell {ms:.2} ms per chunk over {count} chunks");
 }
 
 #[test]

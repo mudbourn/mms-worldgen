@@ -721,7 +721,9 @@ pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_biomeSearc
     if tree < 0 || tree as usize >= biomes.tree_count() || targets.len() % 6 != 0 {
         return std::ptr::null_mut();
     }
-    match catch_unwind(AssertUnwindSafe(|| biomes.search_batch(tree as usize, &targets))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        biomes.search_batch(tree as usize, &targets)
+    })) {
         Ok(Some(values)) => int_result(&mut env, &values),
         _ => std::ptr::null_mut(),
     }

@@ -44,34 +44,88 @@ enum Op {
         dst: usize,
         ordinal: usize,
     },
+    Noise {
+        dst: usize,
+        noise: usize,
+        xz_scale: f64,
+        y_scale: f64,
+    },
+    Expand(usize, usize),
+}
+
+// Block positions of the lanes of a cell and the distinct block ys of its layers.
+pub struct Lanes<'a> {
+    pub xs: &'a [i32],
+    pub ys: &'a [i32],
+    pub zs: &'a [i32],
+    pub layer_ys: &'a [i32],
+    pub layer_of: &'a [usize],
 }
 
 // A density function whose cheap nodes run over every block of a cell at once.
 pub struct CellPlan {
     ops: Vec<Op>,
+    layer_only: Vec<bool>,
     constants: Vec<(usize, f64)>,
     registers: usize,
     root: usize,
-    uses_y: bool,
 }
 
 struct Compiler<'a> {
     tree: &'a Tree,
     ordinals: Vec<usize>,
     reg_of: Vec<Option<usize>>,
+    layer_reg: Vec<bool>,
+    expanded: Vec<Option<usize>>,
     plan: CellPlan,
 }
 
 impl Compiler<'_> {
     fn fresh(&mut self) -> usize {
         self.plan.registers += 1;
+        self.layer_reg.push(false);
+        self.expanded.push(None);
         self.plan.registers - 1
     }
 
     fn constant(&mut self, value: f64) -> usize {
         let reg = self.fresh();
+        self.layer_reg[reg] = true;
         self.plan.constants.push((reg, value));
         reg
+    }
+
+    // The register as a per-lane value, widening a per-layer one on first use.
+    fn lane(&mut self, reg: usize) -> usize {
+        if !self.layer_reg[reg] || self.plan.constants.iter().any(|(r, _)| *r == reg) {
+            return reg;
+        }
+        if let Some(wide) = self.expanded[reg] {
+            return wide;
+        }
+        let dst = self.fresh();
+        self.push(Op::Expand(dst, reg), false);
+        self.expanded[reg] = Some(dst);
+        dst
+    }
+
+    fn push(&mut self, op: Op, layer: bool) {
+        self.plan.ops.push(op);
+        self.plan.layer_only.push(layer);
+    }
+
+    // Emits an op over per-lane operands, or over per-layer ones when all of them are.
+    fn emit(&mut self, inputs: &[usize], make: impl Fn(usize, &[usize]) -> Op) -> usize {
+        let layer = inputs.iter().all(|r| self.layer_reg[*r]);
+        let operands: Vec<usize> = if layer {
+            inputs.to_vec()
+        } else {
+            inputs.iter().map(|r| self.lane(*r)).collect()
+        };
+        let dst = self.fresh();
+        self.layer_reg[dst] = layer;
+        self.push(make(dst, &operands), layer);
+        dst
     }
 
     fn visit(&mut self, id: usize) -> Option<usize> {
@@ -85,27 +139,19 @@ impl Compiler<'_> {
             Node::BlendDensity(input) => self.visit(input)?,
             Node::Add(a, b) => {
                 let (a, b) = (self.visit(a)?, self.visit(b)?);
-                let dst = self.fresh();
-                self.plan.ops.push(Op::Add(dst, a, b));
-                dst
+                self.emit(&[a, b], |d, r| Op::Add(d, r[0], r[1]))
             }
             Node::Mul(a, b) => {
                 let (a, b) = (self.visit(a)?, self.visit(b)?);
-                let dst = self.fresh();
-                self.plan.ops.push(Op::Mul(dst, a, b));
-                dst
+                self.emit(&[a, b], |d, r| Op::Mul(d, r[0], r[1]))
             }
             Node::Min(a, b) => {
                 let (a, b) = (self.visit(a)?, self.visit(b)?);
-                let dst = self.fresh();
-                self.plan.ops.push(Op::Min(dst, a, b));
-                dst
+                self.emit(&[a, b], |d, r| Op::Min(d, r[0], r[1]))
             }
             Node::Max(a, b) => {
                 let (a, b) = (self.visit(a)?, self.visit(b)?);
-                let dst = self.fresh();
-                self.plan.ops.push(Op::Max(dst, a, b));
-                dst
+                self.emit(&[a, b], |d, r| Op::Max(d, r[0], r[1]))
             }
             Node::MulOrAdd {
                 input,
@@ -113,31 +159,29 @@ impl Compiler<'_> {
                 argument,
             } => {
                 let input = self.visit(input)?;
-                let dst = self.fresh();
-                self.plan.ops.push(Op::MulOrAdd {
+                self.emit(&[input], |dst, r| Op::MulOrAdd {
                     dst,
-                    input,
+                    input: r[0],
                     add,
                     argument,
-                });
-                dst
+                })
             }
             Node::Mapped { input, kind } => {
                 let input = self.visit(input)?;
-                let dst = self.fresh();
-                self.plan.ops.push(Op::Mapped { dst, input, kind });
-                dst
+                self.emit(&[input], |dst, r| Op::Mapped {
+                    dst,
+                    input: r[0],
+                    kind,
+                })
             }
             Node::Clamp { input, min, max } => {
                 let input = self.visit(input)?;
-                let dst = self.fresh();
-                self.plan.ops.push(Op::Clamp {
+                self.emit(&[input], |dst, r| Op::Clamp {
                     dst,
-                    input,
+                    input: r[0],
                     min,
                     max,
-                });
-                dst
+                })
             }
             Node::RangeChoice {
                 input,
@@ -149,16 +193,14 @@ impl Compiler<'_> {
                 let input = self.visit(input)?;
                 let in_range = self.visit(in_range)?;
                 let out_of_range = self.visit(out_of_range)?;
-                let dst = self.fresh();
-                self.plan.ops.push(Op::Range {
+                self.emit(&[input, in_range, out_of_range], |dst, r| Op::Range {
                     dst,
-                    input,
-                    in_range,
-                    out_of_range,
+                    input: r[0],
+                    in_range: r[1],
+                    out_of_range: r[2],
                     min_inclusive,
                     max_exclusive,
-                });
-                dst
+                })
             }
             Node::YGradient {
                 from_y,
@@ -167,23 +209,46 @@ impl Compiler<'_> {
                 to_value,
             } => {
                 let dst = self.fresh();
-                self.plan.uses_y = true;
-                self.plan.ops.push(Op::Gradient {
-                    dst,
-                    from_y,
-                    to_y,
-                    from_value,
-                    to_value,
-                });
+                self.layer_reg[dst] = true;
+                self.push(
+                    Op::Gradient {
+                        dst,
+                        from_y,
+                        to_y,
+                        from_value,
+                        to_value,
+                    },
+                    true,
+                );
+                dst
+            }
+            Node::Noise {
+                noise,
+                xz_scale,
+                y_scale,
+            } => {
+                let dst = self.fresh();
+                self.push(
+                    Op::Noise {
+                        dst,
+                        noise,
+                        xz_scale,
+                        y_scale,
+                    },
+                    false,
+                );
                 dst
             }
             Node::Marker { input, kind } => match kind {
                 MarkerKind::Interpolated => {
                     let dst = self.fresh();
-                    self.plan.ops.push(Op::Interpolated {
-                        dst,
-                        ordinal: self.ordinals[id],
-                    });
+                    self.push(
+                        Op::Interpolated {
+                            dst,
+                            ordinal: self.ordinals[id],
+                        },
+                        false,
+                    );
                     dst
                 }
                 MarkerKind::CacheOnce | MarkerKind::Cache2d => self.visit(input)?,
@@ -276,12 +341,14 @@ impl CellPlan {
             tree,
             ordinals,
             reg_of: vec![None; tree.node_count()],
+            layer_reg: Vec::new(),
+            expanded: Vec::new(),
             plan: CellPlan {
                 ops: Vec::new(),
+                layer_only: Vec::new(),
                 constants: Vec::new(),
                 registers: 0,
                 root: 0,
-                uses_y: false,
             },
         };
         compiler.plan.root = compiler.visit(root)?;
@@ -291,6 +358,7 @@ impl CellPlan {
     // Bounds the root over a cell from the corner ranges, or None when the bounds are not trustworthy.
     pub fn root_range(
         &self,
+        tree: &Tree,
         bounds: &mut Vec<(f64, f64)>,
         corners: &[(f64, f64)],
         y_low: i32,
@@ -373,6 +441,11 @@ impl CellPlan {
                     (dst, hull(&[at(y_low), at(y_high)]))
                 }
                 Op::Interpolated { dst, ordinal } => (dst, corners[ordinal]),
+                Op::Noise { dst, noise, .. } => {
+                    let max = tree.noise_max(noise);
+                    (dst, (-max, max))
+                }
+                Op::Expand(dst, src) => (dst, bounds[src]),
             };
             if !range.0.is_finite() || !range.1.is_finite() {
                 return None;
@@ -397,9 +470,21 @@ impl CellPlan {
         }
     }
 
-    // Runs every step over all lanes; ys holds the block y of each lane and cells the interpolated corners.
-    pub fn run(&self, regs: &mut [f64], lanes: usize, ys: &[i32], cells: &[Vec<f64>]) {
-        for op in &self.ops {
+    // Runs every step over all lanes, or over the layers for steps that depend on y alone.
+    pub fn run(
+        &self,
+        tree: &Tree,
+        regs: &mut [f64],
+        stride: usize,
+        at: &Lanes,
+        cells: &[Vec<f64>],
+    ) {
+        for (op, layer) in self.ops.iter().zip(&self.layer_only) {
+            let (lanes, ys) = if *layer {
+                (at.layer_ys.len(), at.layer_ys)
+            } else {
+                (at.ys.len(), at.ys)
+            };
             let dst = match *op {
                 Op::Add(d, ..) | Op::Mul(d, ..) | Op::Min(d, ..) | Op::Max(d, ..) => d,
                 Op::MulOrAdd { dst, .. }
@@ -407,11 +492,13 @@ impl CellPlan {
                 | Op::Clamp { dst, .. }
                 | Op::Range { dst, .. }
                 | Op::Gradient { dst, .. }
-                | Op::Interpolated { dst, .. } => dst,
+                | Op::Interpolated { dst, .. }
+                | Op::Noise { dst, .. } => dst,
+                Op::Expand(dst, _) => dst,
             };
-            let (before, after) = regs.split_at_mut(dst * lanes);
+            let (before, after) = regs.split_at_mut(dst * stride);
             let out = &mut after[..lanes];
-            let reg = |r: usize| &before[r * lanes..(r + 1) * lanes];
+            let reg = |r: usize| &before[r * stride..r * stride + lanes];
             match *op {
                 Op::Add(_, a, b) => each2(out, reg(a), reg(b), |x, y| x + y),
                 Op::Mul(_, a, b) => each2(
@@ -490,6 +577,27 @@ impl CellPlan {
                     }
                 }
                 Op::Interpolated { ordinal, .. } => out.copy_from_slice(&cells[ordinal]),
+                Op::Noise {
+                    noise,
+                    xz_scale,
+                    y_scale,
+                    ..
+                } => {
+                    for (l, o) in out.iter_mut().enumerate() {
+                        *o = tree.noise_value(
+                            noise,
+                            at.xs[l] as f64 * xz_scale,
+                            at.ys[l] as f64 * y_scale,
+                            at.zs[l] as f64 * xz_scale,
+                        );
+                    }
+                }
+                Op::Expand(_, src) => {
+                    let layers = &before[src * stride..];
+                    for (o, layer) in out.iter_mut().zip(at.layer_of) {
+                        *o = layers[*layer];
+                    }
+                }
             }
         }
     }

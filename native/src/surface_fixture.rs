@@ -422,5 +422,8 @@ fn bench_surface_chunk() {
         run();
     }
     let ms = start.elapsed().as_secs_f64() * 1000.0 / (10 * chunks.len()) as f64;
-    println!("surface {ms:.2} ms per chunk over {} chunks", 10 * chunks.len());
+    println!(
+        "surface {ms:.2} ms per chunk over {} chunks",
+        10 * chunks.len()
+    );
 }

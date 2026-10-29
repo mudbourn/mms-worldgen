@@ -184,7 +184,10 @@ impl Biomes {
             return Err("biome fill inputs are malformed".to_string());
         }
         let trees = self.forest.tree_count();
-        if regions.iter().any(|r| *r < 0 || *r as usize >= trees || !self.forest.has_tree(*r as usize)) {
+        if regions
+            .iter()
+            .any(|r| *r < 0 || *r as usize >= trees || !self.forest.has_tree(*r as usize))
+        {
             return Err("biome region has no search tree".to_string());
         }
         let mut eval = self.eval(Some((chunk_x * 4, chunk_z * 4)));
@@ -270,7 +273,14 @@ mod tests {
         let out = biomes.climate_points(&[0, 0, 0, 3, -16, 7]);
         assert_eq!(out[..3], [2500, 2500, 2500]);
         assert_eq!(out[3], 2500);
-        assert_eq!(out[4], quantize(biomes.tree.compute(biomes.tree.root_node(ROOT_DEPTH), 0, 0, 0)));
+        assert_eq!(
+            out[4],
+            quantize(
+                biomes
+                    .tree
+                    .compute(biomes.tree.root_node(ROOT_DEPTH), 0, 0, 0)
+            )
+        );
     }
 
     #[test]
@@ -281,8 +291,16 @@ mod tests {
         assert_eq!(out.len(), 8 * 16);
         for qy in 0..8usize {
             let y = (-16 + qy as i32) * 4;
-            let depth = quantize(biomes.tree.compute(biomes.tree.root_node(ROOT_DEPTH), 0, y, 0));
-            let expected = if (depth + 20000).abs() <= (depth - 20000).abs() { 0 } else { 1 };
+            let depth = quantize(
+                biomes
+                    .tree
+                    .compute(biomes.tree.root_node(ROOT_DEPTH), 0, y, 0),
+            );
+            let expected = if (depth + 20000).abs() <= (depth - 20000).abs() {
+                0
+            } else {
+                1
+            };
             for cell in 0..16usize {
                 assert_eq!(out[qy * 16 + cell], expected);
             }
@@ -302,7 +320,9 @@ mod tests {
         let biomes = Biomes::new(climate_tree(), forest(), -1).unwrap();
         let mut eval = biomes.eval(Some((8, 8)));
         let cached = biomes.target(&mut eval, 9, 4, 10);
-        let at_zero = biomes.tree.compute(biomes.tree.root_node(ROOT_DEPTH), 36, 0, 40);
+        let at_zero = biomes
+            .tree
+            .compute(biomes.tree.root_node(ROOT_DEPTH), 36, 0, 40);
         assert_eq!(cached[5], quantize(at_zero));
         let outside = biomes.target(&mut eval, 30, 4, 10);
         let mut plain = biomes.eval(None);

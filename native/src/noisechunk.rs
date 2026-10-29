@@ -1,4 +1,5 @@
 use crate::beard::Beardifier;
+use crate::cell::{CellPlan, Lanes};
 use crate::mth;
 use crate::tree::{Hooks, MarkerKind, Memo, Node, Tree};
 use std::collections::HashMap;
@@ -271,7 +272,11 @@ pub struct Eval<'a> {
     cells: Vec<Vec<f64>>,
     plan_regs: Vec<f64>,
     lane_offsets: Vec<[i32; 3]>,
+    lane_xs: Vec<i32>,
     lane_ys: Vec<i32>,
+    lane_zs: Vec<i32>,
+    layer_ys: Vec<i32>,
+    layer_of: Vec<usize>,
     fractions: Fractions,
     frac_x: Vec<f64>,
     frac_y: Vec<f64>,
@@ -352,6 +357,7 @@ impl<'a> Eval<'a> {
             plan_regs = vec![0.0; plan.register_count() * lanes];
             plan.init(&mut plan_regs, lanes);
         }
+        let layer_of = lane_offsets.iter().map(|o| o[1] as usize).collect();
         Eval {
             layout,
             beard,
@@ -370,7 +376,11 @@ impl<'a> Eval<'a> {
             cells,
             plan_regs,
             lane_offsets,
+            lane_xs: Vec::new(),
             lane_ys: Vec::new(),
+            lane_zs: Vec::new(),
+            layer_ys: Vec::new(),
+            layer_of,
             fractions: Fractions::default(),
             frac_x: fractions(layout.cell_width),
             frac_y: fractions(layout.cell_height),
@@ -547,7 +557,32 @@ impl<'a> Eval<'a> {
     fn density_range(&mut self, tree: &Tree, bottom: i32) -> Option<(f64, f64)> {
         let plan = tree.cell_plan(ROOT_FINAL_DENSITY)?;
         let top = bottom + self.layout.cell_height - 1;
-        plan.root_range(&mut self.bounds, &self.corner_ranges, bottom, top)
+        plan.root_range(tree, &mut self.bounds, &self.corner_ranges, bottom, top)
+    }
+
+    // Runs a cell plan over the lanes of the selected cell.
+    fn run_plan(&mut self, tree: &Tree, plan: &CellPlan) {
+        let lanes = self.layout.cell_len();
+        let start = self.cell_start;
+        self.lane_xs.clear();
+        self.lane_ys.clear();
+        self.lane_zs.clear();
+        for o in &self.lane_offsets {
+            self.lane_xs.push(start[0] + o[0]);
+            self.lane_ys.push(start[1] + o[1]);
+            self.lane_zs.push(start[2] + o[2]);
+        }
+        self.layer_ys.clear();
+        self.layer_ys
+            .extend((0..self.layout.cell_height).map(|cy| start[1] + cy));
+        let at = Lanes {
+            xs: &self.lane_xs,
+            ys: &self.lane_ys,
+            zs: &self.lane_zs,
+            layer_ys: &self.layer_ys,
+            layer_of: &self.layer_of,
+        };
+        plan.run(tree, &mut self.plan_regs, lanes, &at, &self.cells);
     }
 
     // Fills the final density cache lane-wise when its plan compiled, and reports whether it did.
@@ -556,10 +591,7 @@ impl<'a> Eval<'a> {
             return false;
         };
         let lanes = self.layout.cell_len();
-        self.lane_ys.clear();
-        self.lane_ys
-            .extend(self.lane_offsets.iter().map(|o| self.cell_start[1] + o[1]));
-        plan.run(&mut self.plan_regs, lanes, &self.lane_ys, &self.cells);
+        self.run_plan(tree, plan);
         let root = plan.root() * lanes;
         let density = &self.plan_regs[root..root + lanes];
         let Some(cache) = self.cell_caches.last_mut() else {
@@ -894,10 +926,8 @@ mod tests {
                 eval.interpolators[n].fill_cell(&l, fx, fy, fz, &mut eval.cells[n]);
             }
             let bottom = -64 + (trial as i32 % 48) * 8;
-            eval.lane_ys.clear();
-            eval.lane_ys
-                .extend(eval.lane_offsets.iter().map(|o| bottom + o[1]));
-            plan.run(&mut eval.plan_regs, lanes, &eval.lane_ys, &eval.cells);
+            eval.cell_start = [0, bottom, 0];
+            eval.run_plan(&tree, plan);
             let root = plan.root() * lanes;
             let range = eval.density_range(&tree, bottom);
             if let Some((low, high)) = range {

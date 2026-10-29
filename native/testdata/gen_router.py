@@ -5,6 +5,7 @@ import sys
 
 ROOT = sys.argv[1]
 OUT = sys.argv[2]
+SETTINGS = sys.argv[3] if len(sys.argv) > 3 else "overworld"
 FIELDS = [
     "barrier",
     "fluid_level_floodedness",
@@ -184,7 +185,7 @@ class Builder:
 
 
 def main():
-    settings = load("noise_settings/overworld.json")
+    settings = load("noise_settings/" + SETTINGS + ".json")
     router = settings["noise_router"]
     b = Builder()
     roots = [b.visit(router[name]) for name in FIELDS]

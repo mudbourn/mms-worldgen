@@ -58,7 +58,10 @@ impl Forest {
             child_count.push(count as u32);
             value.push(m[2]);
         }
-        if roots.iter().any(|r| *r != NO_TREE && (*r < 0 || *r as usize >= nodes)) {
+        if roots
+            .iter()
+            .any(|r| *r != NO_TREE && (*r < 0 || *r as usize >= nodes))
+        {
             return Err("tree root is out of bounds".to_string());
         }
         Ok(Forest {
@@ -150,7 +153,11 @@ impl Forest {
             }
             let start = self.child_start[node] as usize;
             let count = self.child_count[node] as usize;
-            stack.extend(self.children[start..start + count].iter().map(|c| *c as usize));
+            stack.extend(
+                self.children[start..start + count]
+                    .iter()
+                    .map(|c| *c as usize),
+            );
         }
         best
     }
@@ -203,17 +210,23 @@ mod tests {
             [0, 100, 0, 0, 0, 0, 0],
         ]);
         let mut last = None;
-        assert_eq!(forest.search(0, &[90, 5, 0, 0, 0, 0, 0], &mut last), Some(1));
-        assert_eq!(forest.search(0, &[3, 80, 0, 0, 0, 0, 0], &mut last), Some(2));
-        assert_eq!(forest.search(0, &[-4, -4, 0, 0, 0, 0, 0], &mut last), Some(0));
+        assert_eq!(
+            forest.search(0, &[90, 5, 0, 0, 0, 0, 0], &mut last),
+            Some(1)
+        );
+        assert_eq!(
+            forest.search(0, &[3, 80, 0, 0, 0, 0, 0], &mut last),
+            Some(2)
+        );
+        assert_eq!(
+            forest.search(0, &[-4, -4, 0, 0, 0, 0, 0], &mut last),
+            Some(0)
+        );
     }
 
     #[test]
     fn ties_keep_the_first_leaf_found_and_the_warm_start() {
-        let forest = flat(&[
-            [-10, 0, 0, 0, 0, 0, 0],
-            [10, 0, 0, 0, 0, 0, 0],
-        ]);
+        let forest = flat(&[[-10, 0, 0, 0, 0, 0, 0], [10, 0, 0, 0, 0, 0, 0]]);
         let target = [0, 0, 0, 0, 0, 0, 0];
         let mut last = None;
         assert_eq!(forest.search(0, &target, &mut last), Some(0));

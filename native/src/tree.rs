@@ -836,6 +836,14 @@ impl Tree {
         }
     }
 
+    pub fn noise_max(&self, noise: usize) -> f64 {
+        self.noises[noise].max_value()
+    }
+
+    pub fn noise_value(&self, noise: usize, d: f64, e: f64, f: f64) -> f64 {
+        self.noises[noise].get_value(d, e, f)
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
