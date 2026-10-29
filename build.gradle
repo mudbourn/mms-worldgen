@@ -56,32 +56,63 @@ jar {
     }
 }
 
-// Native targets as Rust triple, jar folder and library file name
+// Native targets as Rust triple, jar folder, library file, cross-linker use and glibc floor
 def nativeTargets = [
-    [triple: 'aarch64-apple-darwin', folder: 'macos-aarch64', file: 'libmms_worldgen_native.dylib'],
-    [triple: 'x86_64-unknown-linux-gnu', folder: 'linux-x86_64', file: 'libmms_worldgen_native.so']
+    [triple: 'aarch64-apple-darwin', folder: 'macos-aarch64', file: 'libmms_worldgen_native.dylib', zig: false],
+    [triple: 'x86_64-apple-darwin', folder: 'macos-x86_64', file: 'libmms_worldgen_native.dylib', zig: false],
+    [triple: 'x86_64-unknown-linux-gnu', folder: 'linux-x86_64', file: 'libmms_worldgen_native.so', zig: true, glibc: '2.17'],
+    [triple: 'aarch64-unknown-linux-gnu', folder: 'linux-aarch64', file: 'libmms_worldgen_native.so', zig: true, glibc: '2.17'],
+    [triple: 'x86_64-pc-windows-gnu', folder: 'windows-x86_64', file: 'mms_worldgen_native.dll', zig: true]
 ]
 
 def nativeDir = file("$projectDir/native")
+def requireNatives = providers.gradleProperty('natives.require').map { it.toBoolean() }.orElse(false)
 def rustSysroot = providers.exec { commandLine 'rustc', '--print', 'sysroot' }
     .standardOutput.asText.map { it.trim() }
+def zigbuildReady = providers.exec {
+    commandLine 'cargo', 'zigbuild', '--help'
+    ignoreExitValue = true
+}.result.map { it.exitValue == 0 }
+
+def missingToolchain = { target ->
+    def missing = []
+    if (!file("${rustSysroot.get()}/lib/rustlib/${target.triple}").isDirectory()) {
+        missing << "Rust std (rustup target add ${target.triple})"
+    }
+    if (target.zig && !zigbuildReady.get()) {
+        missing << 'cargo-zigbuild'
+    }
+    missing
+}
+
+// Fails a release build that would ship without every native target
+def verifyNatives = tasks.register('verifyNatives') {
+    onlyIf { requireNatives.get() }
+    doLast {
+        def problems = nativeTargets.findAll { !missingToolchain(it).isEmpty() }.collect {
+            "${it.triple} needs ${missingToolchain(it).join(' and ')}"
+        }
+        if (!problems.isEmpty()) {
+            throw new GradleException("Release blocked, missing native toolchains:\n  " + problems.join('\n  '))
+        }
+    }
+}
 
 def cargoTasks = nativeTargets.collect { target ->
     def name = target.folder.split('-').collect { it.capitalize() }.join('')
     tasks.register("cargoBuild${name}", Exec) {
+        dependsOn verifyNatives
         workingDir nativeDir
-        commandLine 'cargo', 'build', '--release', '--target', target.triple
+        commandLine 'cargo', target.zig ? 'zigbuild' : 'build', '--release', '--target', target.triple + (target.glibc ? ".${target.glibc}" : '')
         inputs.dir("$nativeDir/src")
         inputs.file("$nativeDir/Cargo.toml")
         outputs.file("$nativeDir/target/${target.triple}/release/${target.file}")
-        onlyIf("Rust std for ${target.triple} is installed") {
-            def ready = file("${rustSysroot.get()}/lib/rustlib/${target.triple}").isDirectory()
-            if (!ready) {
-                logger.warn(
-                    "Skipping native ${target.triple}: no Rust std for it, jar ships without this library"
-                )
+        onlyIf("toolchain for ${target.triple} is installed") {
+            def missing = missingToolchain(target)
+            if (!missing.isEmpty()) {
+                logger.warn("Skipping native ${target.triple}: needs ${missing.join(' and ')}, jar ships without it")
             }
-            ready
+            missing.isEmpty()
         }
     }
 }
