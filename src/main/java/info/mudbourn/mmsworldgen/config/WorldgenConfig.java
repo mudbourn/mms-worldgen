@@ -24,6 +24,7 @@ public final class WorldgenConfig {
     public Rust rust = new Rust();
     public Compat compat = new Compat();
     public Movement movement = new Movement();
+    public Templates templates = new Templates();
 
     public static final class Scheduling {
         public boolean enabled = false;
@@ -36,10 +37,10 @@ public final class WorldgenConfig {
         public int capFullPlayers = 25;
         public int playerMaxLoadRate = 120;
         public boolean headingBias = true;
-        public double lookaheadSeconds = 6;
+        public double lookaheadSeconds = 8;
         public double prefetchConeDegrees = 35;
-        public int maxPrefetchChunks = 256;
-        public double prefetchShare = 0.5;
+        public int maxPrefetchChunks = 1024;
+        public double prefetchShare = 0.75;
 
         private void validate() {
             playerMaxGenerateRate = fix(
@@ -101,10 +102,12 @@ public final class WorldgenConfig {
     public static final class Rust {
         public String noiseMode = "off";
         public String surfaceMode = "off";
+        public String biomesMode = "off";
 
         private void validate() {
             noiseMode = checkMode("rust.noise_mode", noiseMode);
             surfaceMode = checkMode("rust.surface_mode", surfaceMode);
+            biomesMode = checkMode("rust.biomes_mode", biomesMode);
         }
 
         private static String checkMode(String key, String mode) {
@@ -116,7 +119,7 @@ public final class WorldgenConfig {
         }
 
         public boolean anyOn() {
-            return !"off".equals(noiseMode) || !"off".equals(surfaceMode);
+            return !"off".equals(noiseMode) || !"off".equals(surfaceMode) || !"off".equals(biomesMode);
         }
     }
 
@@ -127,6 +130,10 @@ public final class WorldgenConfig {
 
     public static final class Movement {
         public boolean rejectUnreadyChunks = true;
+    }
+
+    public static final class Templates {
+        public boolean diskCache = false;
     }
 
     private static int fix(String field, int value, int min, int max) {
@@ -182,6 +189,9 @@ public final class WorldgenConfig {
         }
         if (movement == null) {
             movement = new Movement();
+        }
+        if (templates == null) {
+            templates = new Templates();
         }
         scheduling.validate();
         parity.validate();

@@ -1,10 +1,12 @@
 pub mod aquifer;
 pub mod beard;
 pub mod cell;
+pub mod climate;
 pub mod mth;
 pub mod noise;
 pub mod noisechunk;
 pub mod random;
+pub mod rtree;
 pub mod sample;
 pub mod simplex;
 pub mod stage;
@@ -17,9 +19,11 @@ mod fixture;
 #[cfg(test)]
 mod surface_fixture;
 
-use jni::objects::{JClass, JDoubleArray, JIntArray, JObjectArray, JString};
+use climate::Biomes;
+use jni::objects::{JClass, JDoubleArray, JIntArray, JLongArray, JObjectArray, JString};
 use jni::sys::{jboolean, jdoubleArray, jint, jintArray, jlong, jlongArray, jstring};
 use jni::JNIEnv;
+use rtree::Forest;
 use stage::Stage;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
@@ -29,6 +33,7 @@ use tree::{Spec, Tree};
 static TREES: Mutex<Vec<Option<Arc<Tree>>>> = Mutex::new(Vec::new());
 static STAGES: Mutex<Vec<Option<Arc<Stage>>>> = Mutex::new(Vec::new());
 static SURFACES: Mutex<Vec<Option<Arc<Surface>>>> = Mutex::new(Vec::new());
+static BIOMES: Mutex<Vec<Option<Arc<Biomes>>>> = Mutex::new(Vec::new());
 
 fn read_doubles(env: &mut JNIEnv, array: &JDoubleArray) -> Option<Vec<f64>> {
     let len = env.get_array_length(array).ok()? as usize;
@@ -41,6 +46,13 @@ fn read_ints(env: &mut JNIEnv, array: &JIntArray) -> Option<Vec<i32>> {
     let len = env.get_array_length(array).ok()? as usize;
     let mut buffer = vec![0; len];
     env.get_int_array_region(array, 0, &mut buffer).ok()?;
+    Some(buffer)
+}
+
+fn read_longs(env: &mut JNIEnv, array: &JLongArray) -> Option<Vec<i64>> {
+    let len = env.get_array_length(array).ok()? as usize;
+    let mut buffer = vec![0; len];
+    env.get_long_array_region(array, 0, &mut buffer).ok()?;
     Some(buffer)
 }
 
@@ -65,6 +77,22 @@ fn lookup_surface(handle: jlong) -> Option<Arc<Surface>> {
     let surfaces = SURFACES.lock().ok()?;
     let slot = usize::try_from(handle.checked_sub(1)?).ok()?;
     surfaces.get(slot)?.clone()
+}
+
+fn lookup_biomes(handle: jlong) -> Option<Arc<Biomes>> {
+    let biomes = BIOMES.lock().ok()?;
+    let slot = usize::try_from(handle.checked_sub(1)?).ok()?;
+    biomes.get(slot)?.clone()
+}
+
+fn long_result(env: &mut JNIEnv, values: &[i64]) -> jlongArray {
+    let Ok(array) = env.new_long_array(values.len() as jint) else {
+        return std::ptr::null_mut();
+    };
+    match env.set_long_array_region(&array, 0, values) {
+        Ok(()) => array.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 fn int_result(env: &mut JNIEnv, values: &[i32]) -> jintArray {
@@ -559,4 +587,164 @@ pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_surfaceCol
         Ok(values) => int_result(&mut env, &values),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+// Builds a biome sampler over a density tree for RustNative.createBiomes and returns its handle, or throws.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_createBiomes<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    tree_handle: jlong,
+    spans: JLongArray<'local>,
+    meta: JIntArray<'local>,
+    children: JIntArray<'local>,
+    roots: JIntArray<'local>,
+    placeholder: jint,
+) -> jlong {
+    let inputs = (
+        lookup(tree_handle),
+        read_longs(&mut env, &spans),
+        read_ints(&mut env, &meta),
+        read_ints(&mut env, &children),
+        read_ints(&mut env, &roots),
+    );
+    let result = match inputs {
+        (Some(tree), Some(spans), Some(meta), Some(children), Some(roots)) => {
+            Forest::new(&spans, &meta, &children, &roots)
+                .and_then(|forest| Biomes::new(tree, forest, placeholder))
+        }
+        _ => Err("biome inputs could not be read".to_string()),
+    };
+    match result {
+        Ok(biomes) => {
+            let Ok(mut all) = BIOMES.lock() else {
+                return 0;
+            };
+            all.push(Some(Arc::new(biomes)));
+            all.len() as jlong
+        }
+        Err(message) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", message);
+            0
+        }
+    }
+}
+
+// Fills the biome ids of one chunk for RustNative.fillBiomes, or throws.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_fillBiomes<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    chunk_x: jint,
+    chunk_z: jint,
+    min_quart_y: jint,
+    quart_count: jint,
+    regions: JIntArray<'local>,
+) -> jintArray {
+    let (Some(biomes), Some(regions)) = (lookup_biomes(handle), read_ints(&mut env, &regions))
+    else {
+        let _ = env.throw_new(
+            "java/lang/IllegalArgumentException",
+            "biome inputs could not be read",
+        );
+        return std::ptr::null_mut();
+    };
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        biomes.fill(chunk_x, chunk_z, min_quart_y, quart_count, &regions)
+    }));
+    match outcome {
+        Ok(Ok(values)) => int_result(&mut env, &values),
+        Ok(Err(message)) => {
+            let _ = env.throw_new("java/lang/IllegalArgumentException", message);
+            std::ptr::null_mut()
+        }
+        Err(_) => {
+            let _ = env.throw_new("java/lang/IllegalStateException", "native biomes panicked");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// Releases a biome sampler for RustNative.freeBiomes.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_freeBiomes(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    let Ok(mut all) = BIOMES.lock() else {
+        return;
+    };
+    if let Some(slot) = handle
+        .checked_sub(1)
+        .and_then(|h| usize::try_from(h).ok())
+        .and_then(|h| all.get_mut(h))
+    {
+        *slot = None;
+    }
+}
+
+// Samples the climate at xyz quart triples for RustNative.biomeClimate, or returns null.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_biomeClimate<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    quarts: JIntArray<'local>,
+) -> jlongArray {
+    let (Some(biomes), Some(quarts)) = (lookup_biomes(handle), read_ints(&mut env, &quarts)) else {
+        return std::ptr::null_mut();
+    };
+    if quarts.len() % 3 != 0 {
+        return std::ptr::null_mut();
+    }
+    match catch_unwind(AssertUnwindSafe(|| biomes.climate_points(&quarts))) {
+        Ok(values) => long_result(&mut env, &values),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+// Searches one biome tree for six value targets for RustNative.biomeSearch, or returns null.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_biomeSearch<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    tree: jint,
+    targets: JLongArray<'local>,
+) -> jintArray {
+    let (Some(biomes), Some(targets)) = (lookup_biomes(handle), read_longs(&mut env, &targets))
+    else {
+        return std::ptr::null_mut();
+    };
+    if tree < 0 || tree as usize >= biomes.tree_count() || targets.len() % 6 != 0 {
+        return std::ptr::null_mut();
+    }
+    match catch_unwind(AssertUnwindSafe(|| biomes.search_batch(tree as usize, &targets))) {
+        Ok(Some(values)) => int_result(&mut env, &values),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+// Gives the best leaf distance of a value for RustNative.biomeDistance, or -1 when it has none.
+#[no_mangle]
+pub extern "system" fn Java_info_mudbourn_mmsworldgen_rust_RustNative_biomeDistance<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    tree: jint,
+    value: jint,
+    target: JLongArray<'local>,
+) -> jlong {
+    let (Some(biomes), Some(target)) = (lookup_biomes(handle), read_longs(&mut env, &target))
+    else {
+        return -1;
+    };
+    if tree < 0 {
+        return -1;
+    }
+    biomes
+        .best_distance(tree as usize, value, &target)
+        .unwrap_or(-1)
 }

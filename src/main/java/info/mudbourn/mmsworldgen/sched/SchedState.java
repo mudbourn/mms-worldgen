@@ -33,9 +33,9 @@ public final class SchedState {
     private static final double FULL_BIAS_SPEED = 8.0;
     private static final double REFERENCE_SPEED = 8.0;
     private static final double MIN_COS = 0.1;
-    private static final int MAX_REACH_CHUNKS = 48;
-    private static final int PREFETCH_INTERVAL_TICKS = 4;
-    private static final int PREFETCH_ISSUES_PER_PASS = 32;
+    private static final int MAX_REACH_CHUNKS = 128;
+    private static final int PREFETCH_INTERVAL_TICKS = 2;
+    private static final int PREFETCH_ISSUES_PER_PASS = 64;
     private static final long PREFETCH_REFRESH_TICKS = 400;
     private static final long STALE_NO_HOLDER_TICKS = 100;
     private static final long STALE_GENERATING_TICKS = 1200;
@@ -132,7 +132,7 @@ public final class SchedState {
             lines.add(
                 String.format(
                     "%s: speed %.1f b/s, generate tokens %.1f/%d, load tokens %.1f/%d, queued %d, generating %d/%d,"
-                        + " prefetch %d held, %d issued",
+                        + " prefetch %d held, %d issued, peak since last status %.1f b/s with %d held",
                     budget.name,
                     budget.speed(),
                     budget.generateTokens,
@@ -143,9 +143,13 @@ public final class SchedState {
                     budget.generating,
                     concurrentGenerates,
                     budget.prefetched.size(),
-                    budget.prefetchIssued
+                    budget.prefetchIssued,
+                    budget.peakSpeed,
+                    budget.peakHeld
                 )
             );
+            budget.peakSpeed = 0;
+            budget.peakHeld = 0;
         }
         return lines;
     }
@@ -381,6 +385,8 @@ public final class SchedState {
             return;
         }
         double speed = budget.speed();
+        budget.peakSpeed = Math.max(budget.peakSpeed, speed);
+        budget.peakHeld = Math.max(budget.peakHeld, budget.prefetched.size());
         double ux = budget.velocityX / speed;
         double uz = budget.velocityZ / speed;
         double reach = Math.min(config.lookaheadSeconds * speed, MAX_REACH_CHUNKS * 16.0);

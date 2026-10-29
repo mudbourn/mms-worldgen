@@ -387,3 +387,40 @@ fn only_default_block_positions_are_rewritten_unless_an_extension_runs() {
         );
     }
 }
+
+#[test]
+#[ignore]
+fn bench_surface_chunk() {
+    let surface = surface(0);
+    let flags = palette_flags();
+    let chunks: Vec<(i32, i32, Vec<i32>, Vec<i32>, Vec<i32>)> = (0..16)
+        .map(|i| {
+            let (cx, cz) = (200 + i % 4 * 3, 200 + i / 4 * 3);
+            let (maps, blocks) = noise_chunk(0, cx, cz);
+            (cx, cz, maps, blocks, biome_grid(cx, cz))
+        })
+        .collect();
+    let run = || {
+        for (cx, cz, maps, blocks, grid) in &chunks {
+            let input = Input {
+                chunk_x: *cx,
+                chunk_z: *cz,
+                min_y: MIN_Y,
+                max_y: MAX_Y,
+                biome_seed: BIOME_SEED,
+                maps,
+                blocks,
+                flags: &flags,
+                biomes: grid,
+            };
+            std::hint::black_box(surface.build(&input).unwrap());
+        }
+    };
+    run();
+    let start = std::time::Instant::now();
+    for _ in 0..10 {
+        run();
+    }
+    let ms = start.elapsed().as_secs_f64() * 1000.0 / (10 * chunks.len()) as f64;
+    println!("surface {ms:.2} ms per chunk over {} chunks", 10 * chunks.len());
+}

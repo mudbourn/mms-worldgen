@@ -1,0 +1,15 @@
+{
+  "placement": {
+    "type": "minecraft:random_spread",
+    "salt": 5454151,
+    "separation": 6,
+    "spacing": 23,
+    "spread_type": "triangular"
+  },
+  "structures": [
+    {
+      "structure": "biomeswevegone:red_rock_arch",
+      "weight": 1
+    }
+  ]
+}

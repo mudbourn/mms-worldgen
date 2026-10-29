@@ -219,6 +219,137 @@ pub struct Surface {
     temperature_noise: PerlinSimplexNoise,
     frozen_noise: PerlinSimplexNoise,
     info_noise: PerlinSimplexNoise,
+    seq_filter: Vec<u32>,
+    seq_ranges: Vec<(u32, u32)>,
+    seq_children: Vec<i32>,
+}
+
+// Biomes a rule or condition can match, None for every biome.
+type BiomeSet = Option<Vec<u64>>;
+
+fn set_has(set: &BiomeSet, biome: usize) -> bool {
+    match set {
+        None => true,
+        Some(words) => words[biome >> 6] >> (biome & 63) & 1 != 0,
+    }
+}
+
+fn set_union(a: &BiomeSet, b: &BiomeSet) -> BiomeSet {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.iter().zip(y).map(|(p, q)| p | q).collect()),
+        _ => None,
+    }
+}
+
+fn set_intersect(a: &BiomeSet, b: &BiomeSet) -> BiomeSet {
+    match (a, b) {
+        (None, other) | (other, None) => other.clone(),
+        (Some(x), Some(y)) => Some(x.iter().zip(y).map(|(p, q)| p & q).collect()),
+    }
+}
+
+// Static biome reach of the rule tree, memoized per node.
+struct Reach<'a> {
+    s: &'a Surface,
+    words: usize,
+    rules: Vec<Option<BiomeSet>>,
+    conds: Vec<Option<BiomeSet>>,
+}
+
+impl Reach<'_> {
+    fn list_set(&self, start: i32, invert: bool) -> BiomeSet {
+        let mut words = vec![0u64; self.words];
+        for biome in 0..self.s.biomes.len() {
+            if (self.s.lists[start as usize + biome] != 0) != invert {
+                words[biome >> 6] |= 1 << (biome & 63);
+            }
+        }
+        Some(words)
+    }
+
+    fn cond(&mut self, id: i32) -> BiomeSet {
+        if let Some(set) = &self.conds[id as usize] {
+            return set.clone();
+        }
+        let s = self.s;
+        let node = s.conds[id as usize];
+        let set = match node[0] {
+            C_BIOME => self.list_set(node[1], false),
+            C_NOT => {
+                let inner = s.conds[node[1] as usize];
+                if inner[0] == C_BIOME {
+                    self.list_set(inner[1], true)
+                } else {
+                    None
+                }
+            }
+            C_ALL => {
+                let mut set = None;
+                for i in 0..node[2] {
+                    let child = self.cond(s.lists[(node[1] + i) as usize]);
+                    set = set_intersect(&set, &child);
+                }
+                set
+            }
+            C_ANY => {
+                let mut set = Some(vec![0u64; self.words]);
+                for i in 0..node[2] {
+                    let child = self.cond(s.lists[(node[1] + i) as usize]);
+                    set = set_union(&set, &child);
+                }
+                set
+            }
+            _ => None,
+        };
+        self.conds[id as usize] = Some(set.clone());
+        set
+    }
+
+    fn rule(&mut self, id: i32) -> BiomeSet {
+        if let Some(set) = &self.rules[id as usize] {
+            return set.clone();
+        }
+        let s = self.s;
+        let node = s.rules[id as usize];
+        let set = match node[0] {
+            R_TEST => {
+                let cond = self.cond(node[1]);
+                let then = self.rule(node[2]);
+                set_intersect(&cond, &then)
+            }
+            R_SEQUENCE => {
+                let mut set = Some(vec![0u64; self.words]);
+                for i in 0..node[2] {
+                    let child = self.rule(s.lists[(node[1] + i) as usize]);
+                    set = set_union(&set, &child);
+                }
+                set
+            }
+            R_GRID => {
+                let mut set = Some(vec![0u64; self.words]);
+                for i in 0..256 {
+                    let child = self.rule(s.lists[(node[1] + i) as usize]);
+                    set = set_union(&set, &child);
+                }
+                set
+            }
+            R_BY_BIOME => {
+                let mut set = self.rule(node[1]);
+                if let Some(words) = &mut set {
+                    for biome in 0..s.biomes.len() {
+                        let target = s.lists[node[2] as usize + biome];
+                        if target >= 0 && set_has(&self.rule(target), biome) {
+                            words[biome >> 6] |= 1 << (biome & 63);
+                        }
+                    }
+                }
+                set
+            }
+            _ => None,
+        };
+        self.rules[id as usize] = Some(set.clone());
+        set
+    }
 }
 
 // The chunk and its neighbourhood as one surface build sees it.
@@ -324,8 +455,13 @@ impl Surface {
             temperature_noise: PerlinSimplexNoise::new(1234, 1),
             frozen_noise: PerlinSimplexNoise::new(3456, 3),
             info_noise: PerlinSimplexNoise::new(2345, 1),
+            seq_filter: Vec::new(),
+            seq_ranges: Vec::new(),
+            seq_children: Vec::new(),
         };
         surface.validate()?;
+        let mut surface = surface;
+        surface.filter_sequences();
         Ok(surface)
     }
 
@@ -404,6 +540,45 @@ impl Surface {
             }
         }
         Ok(())
+    }
+
+    // Per biome child lists for sequences where some children cannot match a biome.
+    fn filter_sequences(&mut self) {
+        let biome_count = self.biomes.len();
+        let mut reach = Reach {
+            s: self,
+            words: biome_count.div_ceil(64),
+            rules: vec![None; self.rules.len()],
+            conds: vec![None; self.conds.len()],
+        };
+        let mut filter = vec![u32::MAX; self.rules.len()];
+        let mut ranges = Vec::new();
+        let mut children = Vec::new();
+        for (id, node) in self.rules.iter().enumerate() {
+            if node[0] != R_SEQUENCE || biome_count == 0 {
+                continue;
+            }
+            let list: Vec<i32> = (0..node[2])
+                .map(|i| self.lists[(node[1] + i) as usize])
+                .collect();
+            let sets: Vec<BiomeSet> = list.iter().map(|child| reach.rule(*child)).collect();
+            if sets.iter().all(|set| set.is_none()) {
+                continue;
+            }
+            filter[id] = ranges.len() as u32;
+            for biome in 0..biome_count {
+                let start = children.len() as u32;
+                for (child, set) in list.iter().zip(&sets) {
+                    if set_has(set, biome) {
+                        children.push(*child);
+                    }
+                }
+                ranges.push((start, children.len() as u32 - start));
+            }
+        }
+        self.seq_filter = filter;
+        self.seq_ranges = ranges;
+        self.seq_children = children;
     }
 
     pub fn biome_count(&self) -> usize {
@@ -486,6 +661,11 @@ impl Surface {
     }
 }
 
+// Quart rows a column's biome zoom can touch, with one spare row each side.
+fn corner_slots(inp: &Input) -> usize {
+    ((inp.max_y - inp.min_y + 1) / 4 + 4) as usize
+}
+
 fn quart_index(value: i32) -> i32 {
     value >> 2
 }
@@ -504,6 +684,15 @@ fn lcg(l: i64, m: i64) -> i64 {
 }
 
 fn fiddled_distance(seed: i64, i: i32, j: i32, k: i32, d: f64, e: f64, f: f64) -> f64 {
+    let (g, h, n) = fiddles(seed, i, j, k);
+    let a = f + n;
+    let b = e + h;
+    let c = d + g;
+    a * a + b * b + c * c
+}
+
+// The seeded x, y and z jitter of one quart corner.
+fn fiddles(seed: i64, i: i32, j: i32, k: i32) -> (f64, f64, f64) {
     let mut m = seed;
     m = lcg(m, i as i64);
     m = lcg(m, j as i64);
@@ -516,10 +705,7 @@ fn fiddled_distance(seed: i64, i: i32, j: i32, k: i32, d: f64, e: f64, f: f64) -
     let h = fiddle(m);
     m = lcg(m, seed);
     let n = fiddle(m);
-    let a = f + n;
-    let b = e + h;
-    let c = d + g;
-    a * a + b * b + c * c
+    (g, h, n)
 }
 
 // Biome lookup over the quart grid of a chunk, with BiomeManager's seeded fuzzy zoom.
@@ -592,10 +778,15 @@ struct Run<'a> {
     cond_stamp: Vec<u32>,
     cond_value: Vec<bool>,
     column_stamp: u32,
+    block_cond_stamp: Vec<u32>,
+    block_cond_value: Vec<bool>,
+    block_stamp: u32,
     block_y: i32,
     water_height: i32,
     stone_below: i32,
     stone_above: i32,
+    corner_stamp: Vec<u32>,
+    corners: Vec<[(f64, f64, f64); 4]>,
     biome: Option<usize>,
     cell: Option<(i32, i32, [i32; 4])>,
 }
@@ -619,10 +810,15 @@ impl<'a> Run<'a> {
             cond_stamp: vec![0; s.conds.len()],
             cond_value: vec![false; s.conds.len()],
             column_stamp: 0,
+            block_cond_stamp: vec![0; s.conds.len()],
+            block_cond_value: vec![false; s.conds.len()],
+            block_stamp: 0,
             block_y: 0,
             water_height: i32::MIN,
             stone_below: 0,
             stone_above: 0,
+            corner_stamp: vec![0; corner_slots(inp)],
+            corners: vec![[(0.0, 0.0, 0.0); 4]; corner_slots(inp)],
             biome: None,
             cell: None,
         }
@@ -733,6 +929,75 @@ impl<'a> Run<'a> {
         }
     }
 
+    // zoom_biome for the current column, reusing the corner jitter across its quarts.
+    fn column_biome(&mut self, y: i32) -> usize {
+        let inp = self.inp;
+        let i = self.block_x - 2;
+        let j = y - 2;
+        let k = self.block_z - 2;
+        let l = i >> 2;
+        let m = j >> 2;
+        let n = k >> 2;
+        let d = (i & 3) as f64 / 4.0;
+        let e = (j & 3) as f64 / 4.0;
+        let f = (k & 3) as f64 / 4.0;
+        let base = ((inp.min_y - 2) >> 2) - 1;
+        if m < base || (m + 1 - base) as usize >= self.corners.len() {
+            return self.biome_at(self.block_x, y, self.block_z);
+        }
+        let min_quart = quart_index(inp.min_y);
+        let max_quart = quart_index(inp.min_y) + quart_index(inp.max_y - inp.min_y + 1) - 1;
+        let gx0 = l - (inp.chunk_x * 4 - 1);
+        let gz0 = n - (inp.chunk_z * 4 - 1);
+        let lo = (m.clamp(min_quart, max_quart) - min_quart) * GRID_QUARTS;
+        let hi = ((m + 1).clamp(min_quart, max_quart) - min_quart) * GRID_QUARTS;
+        let first = inp.biomes[((lo + gz0) * GRID_QUARTS + gx0) as usize];
+        let uniform = [lo, hi].iter().all(|layer| {
+            (0..2).all(|dz| {
+                (0..2).all(|dx| {
+                    inp.biomes[((layer + gz0 + dz) * GRID_QUARTS + gx0 + dx) as usize] == first
+                })
+            })
+        });
+        if uniform {
+            return first as usize;
+        }
+        let mut best = 0;
+        let mut distance = f64::INFINITY;
+        for p in 0..8 {
+            let bx = p & 4 == 0;
+            let by = p & 2 == 0;
+            let bz = p & 1 == 0;
+            let r = if by { m } else { m + 1 };
+            let slot = (r - base) as usize;
+            if self.corner_stamp[slot] != self.column_stamp {
+                for (c, corner) in self.corners[slot].iter_mut().enumerate() {
+                    let q = if c & 2 == 0 { l } else { l + 1 };
+                    let s = if c & 1 == 0 { n } else { n + 1 };
+                    *corner = fiddles(inp.biome_seed, q, r, s);
+                }
+                self.corner_stamp[slot] = self.column_stamp;
+            }
+            let (g, h, o) = self.corners[slot][(!bx as usize) * 2 + !bz as usize];
+            let a = if bz { f } else { f - 1.0 } + o;
+            let b = if by { e } else { e - 1.0 } + h;
+            let c = if bx { d } else { d - 1.0 } + g;
+            let v = a * a + b * b + c * c;
+            if distance > v {
+                best = p;
+                distance = v;
+            }
+        }
+        let qx = if best & 4 == 0 { l } else { l + 1 };
+        let qy = if best & 2 == 0 { m } else { m + 1 };
+        let qz = if best & 1 == 0 { n } else { n + 1 };
+        let qy = qy.clamp(min_quart, max_quart);
+        let gx = qx - (inp.chunk_x * 4 - 1);
+        let gz = qz - (inp.chunk_z * 4 - 1);
+        let index = (((qy - min_quart) * GRID_QUARTS + gz) * GRID_QUARTS + gx) as usize;
+        inp.biomes[index] as usize
+    }
+
     fn biome_at(&self, x: i32, y: i32, z: i32) -> usize {
         zoom_biome(
             self.inp.biomes,
@@ -828,6 +1093,7 @@ impl<'a> Run<'a> {
         self.stone_below = below;
         self.water_height = water;
         self.block_y = y;
+        self.block_stamp += 1;
         self.biome = None;
     }
 
@@ -891,7 +1157,7 @@ impl<'a> Run<'a> {
         if let Some(biome) = self.biome {
             return biome;
         }
-        let biome = self.biome_at(self.block_x, self.block_y, self.block_z);
+        let biome = self.column_biome(self.block_y);
         self.biome = Some(biome);
         biome
     }
@@ -909,6 +1175,17 @@ impl<'a> Run<'a> {
         match node[0] {
             R_BLOCK => Some(node[1]),
             R_SEQUENCE => {
+                let filter = s.seq_filter[id as usize];
+                if filter != u32::MAX {
+                    let biome = self.current_biome();
+                    let (start, count) = s.seq_ranges[filter as usize + biome];
+                    for i in start..start + count {
+                        if let Some(state) = self.rule(s.seq_children[i as usize], x, y, z) {
+                            return Some(state);
+                        }
+                    }
+                    return None;
+                }
                 for i in 0..node[2] {
                     let child = s.lists[(node[1] + i) as usize];
                     if let Some(state) = self.rule(child, x, y, z) {
@@ -965,6 +1242,17 @@ impl<'a> Run<'a> {
     }
 
     fn cond(&mut self, id: i32) -> bool {
+        let index = id as usize;
+        if self.block_cond_stamp[index] == self.block_stamp {
+            return self.block_cond_value[index];
+        }
+        let value = self.eval_cond(id);
+        self.block_cond_stamp[index] = self.block_stamp;
+        self.block_cond_value[index] = value;
+        value
+    }
+
+    fn eval_cond(&mut self, id: i32) -> bool {
         let s = self.s;
         let node = s.conds[id as usize];
         match node[0] {

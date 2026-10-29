@@ -7,10 +7,13 @@
     "BwgBasaltBarreraExtensionMixin",
     "BwgBiomeManagerMixin",
     "BwgCragGardenExtensionMixin",
+    "BwgSurfaceScopeMixin",
+    "ChunkGeneratorPossibleBiomesMixin",
     "MovePlayerChunkGuardMixin",
     "ParityChunkGeneratorAccessor",
     "ParityChunkGeneratorMixin",
     "ParityChunkStatusTasksMixin",
+    "RustBiomesMixin",
     "RustChunkStatusTasksMixin",
     "RustFillMixin",
     "RustFillTimingMixin",
@@ -18,6 +21,7 @@
     "SchedDistanceManagerAccessor",
     "SchedPlayerTicketTrackerAccessor",
     "SchedPlayerTicketTrackerMixin",
+    "StructureTemplateManagerCacheMixin",
     "TerraBlenderAreaMixin"
   ],
   "injectors": {

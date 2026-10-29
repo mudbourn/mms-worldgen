@@ -5,7 +5,7 @@ import net.minecraft.server.level.Ticket;
 
 final class PlayerBudget {
     static final double MOVING_SPEED = 2.0;
-    private static final double TELEPORT_SPEED = 250.0;
+    private static final double TELEPORT_SPEED = 1000.0;
     private static final double SMOOTHING_SECONDS = 0.5;
     private static final double MAX_TRACK_SECONDS = 2.0;
 
@@ -23,6 +23,8 @@ final class PlayerBudget {
     int generating;
     int prefetchGenerating;
     long prefetchIssued;
+    double peakSpeed;
+    int peakHeld;
     String name = "";
 
     PlayerBudget(double generateTokens, double loadTokens, double prefetchTokens, double prefetchLoadTokens) {

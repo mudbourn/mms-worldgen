@@ -18,9 +18,11 @@ public final class RustNative {
     private RustNative() {
     }
 
-    // Loads the native library when either Rust mode is not off.
+    // Loads the native library when any Rust mode is not off.
     public static void init() {
-        String mode = MmsWorldgen.config.rust.noiseMode + "/" + MmsWorldgen.config.rust.surfaceMode;
+        String mode = MmsWorldgen.config.rust.noiseMode
+            + "/" + MmsWorldgen.config.rust.surfaceMode
+            + "/" + MmsWorldgen.config.rust.biomesMode;
         if (!MmsWorldgen.config.rust.anyOn()) {
             MmsWorldgen.LOG.info("Rust sidecar off");
             return;
@@ -244,4 +246,36 @@ public final class RustNative {
 
     // Answers coldEnoughToSnow for biome, x, y, z quadruples, or returns null on bad input.
     static native int[] surfaceCold(long surface, int[] queries);
+
+    // Builds a native biome sampler over a density tree and returns its handle.
+    static native long createBiomes(
+        long tree,
+        long[] spans,
+        int[] meta,
+        int[] children,
+        int[] roots,
+        int placeholder
+    );
+
+    // Fills the biome ids of one chunk as sections hold them; regions pick a search tree per column.
+    static native int[] fillBiomes(
+        long biomes,
+        int chunkX,
+        int chunkZ,
+        int minQuartY,
+        int quartCount,
+        int[] regions
+    );
+
+    // Releases a native biome sampler.
+    static native void freeBiomes(long biomes);
+
+    // Samples the climate at xyz quart triples as six longs per point, or returns null on bad input.
+    static native long[] biomeClimate(long biomes, int[] quarts);
+
+    // Searches one biome tree for targets of six longs each, or returns null on bad input.
+    static native int[] biomeSearch(long biomes, int tree, long[] targets);
+
+    // Returns the smallest distance from a six long target to a leaf holding the value, or -1.
+    static native long biomeDistance(long biomes, int tree, int value, long[] target);
 }

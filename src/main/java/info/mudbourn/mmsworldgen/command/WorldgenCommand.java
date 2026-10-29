@@ -6,6 +6,7 @@ import info.mudbourn.mmsworldgen.parity.ParityCommand;
 import info.mudbourn.mmsworldgen.router.RouterCommand;
 import info.mudbourn.mmsworldgen.rust.RustCommand;
 import info.mudbourn.mmsworldgen.sched.SchedCommand;
+import info.mudbourn.mmsworldgen.templates.TemplateCache;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 
@@ -22,6 +23,7 @@ public final class WorldgenCommand {
         root.then(ParityCommand.build());
         root.then(RouterCommand.build());
         root.then(RustCommand.build());
+        root.then(TemplateCache.build());
         dispatcher.register(root);
     }
 }

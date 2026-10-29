@@ -22,6 +22,13 @@ public final class RustCommand {
         source.sendSuccess(() -> Component.literal(RustSurface.summary()), false);
     }
 
+    private static void sendBiomes(CommandSourceStack source) {
+        RustBiomes.checks().values().forEach(
+            line -> source.sendSuccess(() -> Component.literal(line), false)
+        );
+        source.sendSuccess(() -> Component.literal(RustBiomes.summary()), false);
+    }
+
     // Builds /mmswg rust with the load state, density comparison and shadow counters.
     public static LiteralArgumentBuilder<CommandSourceStack> build() {
         return Commands.literal("rust").then(Commands.literal("compare").executes(context -> {
@@ -39,6 +46,7 @@ public final class RustCommand {
                 : "not loaded (" + RustNative.failure() + ")";
             String line = "rust.noise_mode=" + MmsWorldgen.config.rust.noiseMode
                 + " surface_mode=" + MmsWorldgen.config.rust.surfaceMode
+                + " biomes_mode=" + MmsWorldgen.config.rust.biomesMode
                 + " library " + status
                 + ", " + RustNative.selfTestResult();
             context.getSource().sendSuccess(() -> Component.literal(line), false);
@@ -47,6 +55,7 @@ public final class RustCommand {
             );
             context.getSource().sendSuccess(() -> Component.literal(summary()), false);
             sendSurface(context.getSource());
+            sendBiomes(context.getSource());
             return RustNative.loaded() ? 1 : 0;
         });
     }

@@ -3,6 +3,7 @@ package info.mudbourn.mmsworldgen.mixin;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import info.mudbourn.mmsworldgen.compat.BwgBiomeCache;
+import info.mudbourn.mmsworldgen.compat.BwgBiomeSkip;
 import java.util.function.Function;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -30,7 +31,9 @@ public abstract class BwgBasaltBarreraExtensionMixin {
     ) {
         BwgBiomeCache.enter();
         try {
-            original.call(biomeGetter, chunk, region, generator);
+            if (BwgBiomeSkip.mayContain(chunk, BwgBiomeSkip.BASALT_BARRERA)) {
+                original.call(biomeGetter, chunk, region, generator);
+            }
         } finally {
             BwgBiomeCache.exit(true);
         }

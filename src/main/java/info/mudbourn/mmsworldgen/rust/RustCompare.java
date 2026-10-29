@@ -49,6 +49,7 @@ public final class RustCompare {
     }
 
     private static void release() {
+        RustBiomes.release();
         RustSurface.release();
         RustShadow.release();
         synchronized (STATUS) {
@@ -133,6 +134,7 @@ public final class RustCompare {
         if (matched == total) {
             RustShadow.prepare(dimension, level, settings, handle);
             RustSurface.prepare(dimension, level, generator, settings, handle);
+            RustBiomes.prepare(dimension, level, generator, handle);
         }
         mismatches.forEach(line -> MmsWorldgen.LOG.warn("Rust density mismatch {}: {}", dimension, line));
     }
