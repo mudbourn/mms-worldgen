@@ -38,6 +38,10 @@ public final class RustNative {
             selfTest = RustSelfTest.run();
             if (selfTest.startsWith("Rust noise self-test passed")) {
                 RustCompare.init();
+            } else {
+                loaded = false;
+                failure = "self-test failed";
+                MmsWorldgen.LOG.warn("Rust sidecar disabled, using Java for this session: {}", failure);
             }
         } catch (IOException | RuntimeException | LinkageError e) {
             failure = e.toString();

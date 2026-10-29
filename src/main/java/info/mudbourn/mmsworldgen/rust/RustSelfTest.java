@@ -110,6 +110,9 @@ public final class RustSelfTest {
         if (op == 8) {
             random.consumeCount(arg);
         }
+        if (op == 5) {
+            return strictGaussians(random, count);
+        }
         for (int i = 0; i < count; i++) {
             out[i] = switch (op) {
                 case 0 -> random.nextInt();
@@ -117,10 +120,30 @@ public final class RustSelfTest {
                 case 2, 8 -> random.nextLong();
                 case 3 -> Double.doubleToRawLongBits(random.nextDouble());
                 case 4 -> Float.floatToRawIntBits(random.nextFloat()) & 0xFFFFFFFFL;
-                case 5 -> Double.doubleToRawLongBits(random.nextGaussian());
                 case 6 -> factory.at(i, i * 3 - 5, -i).nextLong();
                 default -> factory.fromHashOf("octave_" + (arg + i)).nextLong();
             };
+        }
+        return out;
+    }
+
+    // Marsaglia polar gaussians computed with StrictMath.log.
+    private static long[] strictGaussians(RandomSource random, int count) {
+        long[] out = new long[count];
+        for (int i = 0; i < count; i += 2) {
+            double d;
+            double e;
+            double f;
+            do {
+                d = 2.0 * random.nextDouble() - 1.0;
+                e = 2.0 * random.nextDouble() - 1.0;
+                f = d * d + e * e;
+            } while (f >= 1.0 || f == 0.0);
+            double g = StrictMath.sqrt(-2.0 * StrictMath.log(f) / f);
+            out[i] = Double.doubleToRawLongBits(d * g);
+            if (i + 1 < count) {
+                out[i + 1] = Double.doubleToRawLongBits(e * g);
+            }
         }
         return out;
     }
