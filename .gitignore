@@ -10,3 +10,5 @@ run/
 !README.md
 !docs/*.md
 native/target/
+.*/
+!.git*/
