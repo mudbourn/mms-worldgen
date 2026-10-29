@@ -50,6 +50,9 @@ accessible class net/minecraft/world/level/levelgen/SurfaceRules$WaterConditionS
 accessible class net/minecraft/world/level/levelgen/SurfaceRules$YConditionSource
 accessible field net/minecraft/world/level/levelgen/SurfaceRules$BiomeConditionSource biomes Ljava/util/List;
 accessible field net/minecraft/world/level/levelgen/SurfaceSystem noiseRandom Lnet/minecraft/world/level/levelgen/PositionalRandomFactory;
+accessible field net/minecraft/world/level/levelgen/SurfaceSystem badlandsPillarNoise Lnet/minecraft/world/level/levelgen/synth/NormalNoise;
+accessible field net/minecraft/world/level/levelgen/SurfaceSystem badlandsPillarRoofNoise Lnet/minecraft/world/level/levelgen/synth/NormalNoise;
+accessible field net/minecraft/world/level/levelgen/SurfaceSystem badlandsSurfaceNoise Lnet/minecraft/world/level/levelgen/synth/NormalNoise;
 accessible class net/minecraft/world/level/biome/Biome$ClimateSettings
 accessible field net/minecraft/world/level/biome/Biome climateSettings Lnet/minecraft/world/level/biome/Biome$ClimateSettings;
 accessible field net/minecraft/world/level/biome/BiomeManager biomeZoomSeed J

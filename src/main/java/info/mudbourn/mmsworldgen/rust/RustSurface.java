@@ -21,6 +21,7 @@ import net.minecraft.core.Registry;
 import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
@@ -45,7 +46,9 @@ public final class RustSurface {
         long handle,
         BlockState defaultBlock,
         List<BlockState> ruleStates,
-        Reference2IntOpenHashMap<Biome> biomeIds
+        Reference2IntOpenHashMap<Biome> biomeIds,
+        SurfaceSystem system,
+        boolean legacy
     ) {
     }
 
@@ -53,6 +56,8 @@ public final class RustSurface {
     record Run(
         Plan plan,
         ChunkAccess chunk,
+        BiomeManager manager,
+        int[] maps,
         List<BlockState> palette,
         int[] before,
         int[] result,
@@ -74,6 +79,7 @@ public final class RustSurface {
     private static final int MAPS = 512;
     private static final int CHECK_POINTS = 512;
     private static final int GRID_QUARTS = 6;
+    private static final int MAX_DUMPED_COLUMNS = 8;
 
     private static final Map<NoiseBasedChunkGenerator, Plan> PLANS = new ConcurrentHashMap<>();
     private static final Map<String, String> CHECKS = new ConcurrentHashMap<>();
@@ -181,7 +187,15 @@ public final class RustSurface {
                 biomeIds.put(biome, id);
             }
         }
-        Plan plan = new Plan(dimension, handle, settings.defaultBlock(), translation.states(), biomeIds);
+        Plan plan = new Plan(
+            dimension,
+            handle,
+            settings.defaultBlock(),
+            translation.states(),
+            biomeIds,
+            system,
+            settings.useLegacyRandomSource()
+        );
         String check;
         try {
             check = check(
@@ -469,7 +483,17 @@ public final class RustSurface {
             flags,
             grid
         );
-        return new Run(plan, chunk, palette, blocks, result, marksBefore, System.nanoTime());
+        return new Run(
+            plan,
+            chunk,
+            manager,
+            maps,
+            palette,
+            blocks,
+            result,
+            marksBefore,
+            System.nanoTime()
+        );
     }
 
     // Writes Rust's changed blocks and fluid marks into the chunk the way BlockColumn does.
@@ -657,11 +681,83 @@ public final class RustSurface {
                     firstHeight,
                     firstMark
                 );
+                dumpColumns(run, expected);
             }
         }
         if (compared % SUMMARY_EVERY == 0) {
             MmsWorldgen.LOG.info("{}", summary());
         }
+    }
+
+    // Logs the eroded-badlands inputs Java sees for each column whose blocks differ.
+    private static void dumpColumns(Run run, int[] expected) {
+        ChunkAccess chunk = run.chunk();
+        Plan plan = run.plan();
+        int minY = chunk.getMinY();
+        int maxY = chunk.getMaxY();
+        int dumped = 0;
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int z = 0; z < 16 && dumped < MAX_DUMPED_COLUMNS; z++) {
+            for (int x = 0; x < 16 && dumped < MAX_DUMPED_COLUMNS; x++) {
+                int lowest = Integer.MAX_VALUE;
+                int highest = Integer.MIN_VALUE;
+                for (int y = minY; y <= maxY; y++) {
+                    BlockState java = chunk.getBlockState(pos.set(x, y, z));
+                    if (java != run.palette().get(expected[(y - minY) * 256 + z * 16 + x])) {
+                        lowest = Math.min(lowest, y);
+                        highest = Math.max(highest, y);
+                    }
+                }
+                if (lowest == Integer.MAX_VALUE) {
+                    continue;
+                }
+                dumped++;
+                int m = chunk.getPos().getMinBlockX() + x;
+                int n = chunk.getPos().getMinBlockZ() + z;
+                int o = run.maps()[256 + x + z * 16];
+                Holder<Biome> biome = run.manager().getBiome(pos.set(m, plan.legacy() ? 0 : o, n));
+                MmsWorldgen.LOG.warn(
+                    "Rust surface column {},{} biome={} top={} pillar={} diff y={}..{} surface java={} rust={}",
+                    m,
+                    n,
+                    biome.unwrapKey().map(key -> key.identifier().toString()).orElse("?"),
+                    o,
+                    pillar(run, x, z, m, n, o),
+                    lowest,
+                    highest,
+                    chunk.getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z) + 1,
+                    run.result()[256 + x + z * 16]
+                );
+            }
+        }
+    }
+
+    // Replays SurfaceSystem.erodedBadlandsExtension's decision for one column on the pre-surface blocks.
+    private static String pillar(Run run, int x, int z, int m, int n, int o) {
+        SurfaceSystem system = run.plan().system();
+        double e = Math.min(
+            Math.abs(system.badlandsSurfaceNoise.getValue(m, 0.0, n) * 8.25),
+            system.badlandsPillarNoise.getValue(m * 0.2, 0.0, n * 0.2) * 15.0
+        );
+        if (e <= 0.0) {
+            return "none e=" + e;
+        }
+        double h = Math.abs(system.badlandsPillarRoofNoise.getValue(m * 0.75, 0.0, n * 0.75) * 1.5);
+        int roof = Mth.floor(64.0 + Math.min(e * e * 2.5, Math.ceil(h * 50.0) + 24.0));
+        if (o > roof) {
+            return "below-top roof=" + roof;
+        }
+        int minY = run.chunk().getMinY();
+        for (int y = roof; y >= minY; y--) {
+            BlockState state = run.palette().get(run.before()[(y - minY) * 256 + z * 16 + x]);
+            if (state.is(run.plan().defaultBlock().getBlock())) {
+                return "build roof=" + roof + " ground=" + y;
+            }
+            if (state.is(Blocks.WATER)) {
+                return "water roof=" + roof + " at=" + y;
+            }
+        }
+        return "build roof=" + roof + " ground=none";
     }
 
     private static void countPair(BlockState java, BlockState rust) {
