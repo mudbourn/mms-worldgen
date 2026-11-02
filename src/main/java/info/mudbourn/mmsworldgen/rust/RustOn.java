@@ -181,7 +181,7 @@ public final class RustOn {
     private static void count(AtomicLong counter) {
         counter.incrementAndGet();
         if (total() % SUMMARY_EVERY == 0) {
-            MmsWorldgen.LOG.info("{}", summary());
+            MmsWorldgen.LOG.debug("{}", summary());
         }
     }
 

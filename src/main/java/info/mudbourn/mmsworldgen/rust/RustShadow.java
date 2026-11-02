@@ -419,7 +419,7 @@ public final class RustShadow {
             }
         }
         if (compared % SUMMARY_EVERY == 0) {
-            MmsWorldgen.LOG.info("{}", summary());
+            MmsWorldgen.LOG.debug("{}", summary());
         }
     }
 

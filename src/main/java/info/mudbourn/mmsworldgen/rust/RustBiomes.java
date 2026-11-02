@@ -409,7 +409,7 @@ public final class RustBiomes {
     private static void count(AtomicLong counter) {
         counter.incrementAndGet();
         if ((ACCEPTED.get() + fallbacks()) % SUMMARY_EVERY == 0 && on()) {
-            MmsWorldgen.LOG.info("{}", summary());
+            MmsWorldgen.LOG.debug("{}", summary());
         }
     }
 
@@ -612,7 +612,7 @@ public final class RustBiomes {
             QUART_MISMATCHES.addAndGet(mismatches);
         }
         if (compared % SUMMARY_EVERY == 0) {
-            MmsWorldgen.LOG.info("{}", summary());
+            MmsWorldgen.LOG.debug("{}", summary());
         }
     }
 
