@@ -2,6 +2,7 @@ package info.mudbourn.mmsworldgen;
 
 import info.mudbourn.mmsworldgen.command.WorldgenCommand;
 import info.mudbourn.mmsworldgen.config.WorldgenConfig;
+import info.mudbourn.mmsworldgen.move.TeleportPreload;
 import info.mudbourn.mmsworldgen.parity.Parity;
 import info.mudbourn.mmsworldgen.prechunk.PreChunk;
 import info.mudbourn.mmsworldgen.rust.RustNative;
@@ -24,6 +25,7 @@ public class MmsWorldgen implements ModInitializer {
         Parity.init();
         Sched.init();
         PreChunk.init();
+        TeleportPreload.init();
         RustNative.init();
         LOG.info("MMS Worldgen loaded.");
     }

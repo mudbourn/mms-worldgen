@@ -26,6 +26,8 @@ public final class WorldgenConfig {
     public Movement movement = new Movement();
     public Templates templates = new Templates();
     public PreChunk prechunk = new PreChunk();
+    public Memory memory = new Memory();
+    public Diagnostics diagnostics = new Diagnostics();
 
     public static final class Scheduling {
         public boolean enabled = false;
@@ -131,6 +133,19 @@ public final class WorldgenConfig {
 
     public static final class Movement {
         public boolean rejectUnreadyChunks = true;
+        public boolean preloadTeleports = true;
+    }
+
+    public static final class Memory {
+        public boolean releaseNoiseChunks = true;
+    }
+
+    public static final class Diagnostics {
+        public int chunkStallMs = 50;
+
+        private void validate() {
+            chunkStallMs = fix("diagnostics.chunk_stall_ms", chunkStallMs, 0, 60000);
+        }
     }
 
     public static final class Templates {
@@ -206,10 +221,17 @@ public final class WorldgenConfig {
         if (prechunk == null) {
             prechunk = new PreChunk();
         }
+        if (memory == null) {
+            memory = new Memory();
+        }
+        if (diagnostics == null) {
+            diagnostics = new Diagnostics();
+        }
         scheduling.validate();
         parity.validate();
         rust.validate();
         prechunk.validate();
+        diagnostics.validate();
     }
 
     private void save() {
