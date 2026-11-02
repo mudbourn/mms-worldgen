@@ -39,6 +39,7 @@ public abstract class MovePlayerChunkGuardMixin {
         double y = packet.getY(player.getY());
         double z = packet.getZ(player.getZ());
         if (MoveGuard.touchesUnready(player.level(), player, x, y, z)) {
+            player.level().getChunkSource().move(player);
             teleport(player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot());
             ci.cancel();
         }
@@ -67,6 +68,7 @@ public abstract class MovePlayerChunkGuardMixin {
             packet.position().y(),
             packet.position().z()
         )) {
+            player.level().getChunkSource().move(player);
             player.connection.send(ClientboundMoveVehiclePacket.fromEntity(vehicle));
             ci.cancel();
         }
